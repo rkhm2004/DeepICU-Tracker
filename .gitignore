@@ -1,0 +1,10 @@
+# Ignore raw patient data
+data/raw/
+
+# Python caches and environments
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+venv/
+.venv/
