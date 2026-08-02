@@ -52,9 +52,12 @@ def parse_mimic_data():
     pivot_df = pivot_df.reset_index()
     
     print("5. Imputing missing values and scaling...")
-    # Forward fill missing hours for each patient, then fill remaining with medians
-    pivot_df = pivot_df.groupby('stay_id').ffill().bfill()
-    pivot_df.fillna(pivot_df.median(), inplace=True)
+    # Forward fill missing hours for each patient, leaving stay_id intact
+    cols = ['wbc', 'heart_rate', 'sbp']
+    pivot_df[cols] = pivot_df.groupby('stay_id')[cols].ffill().bfill()
+    
+    # If a patient had no readings for a specific vital at all, fill with global median
+    pivot_df[cols] = pivot_df[cols].fillna(pivot_df[cols].median())
     
     features = pivot_df[['heart_rate', 'sbp', 'wbc']].values
     
