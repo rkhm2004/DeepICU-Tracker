@@ -34,8 +34,13 @@ def predict_patient_status(hr, sbp, wbc):
         risk_score = mu.item()
         
     # Cutoffs generated from your training loop
+    # Cutoffs generated from your training loop
     cutoffs = [-0.41759565, 0.00931145, 0.51120774]
-    state = int(np.digitize(risk_score, cutoffs))
+    raw_bin = int(np.digitize(risk_score, cutoffs))
+    
+    # Invert the axis: VAE learned negative = critical, positive = stable
+    # This maps raw bin 0 -> State 3 (Critical), raw bin 3 -> State 0 (Low Risk)
+    state = 3 - raw_bin 
     
     return state, risk_score
 
