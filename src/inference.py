@@ -37,23 +37,11 @@ def main():
         print("Error: mimic_tensor.pt not found. Run mimic_parser.py first.")
         return
         
+    # THIS is the line that was missing!
     real_data_tensor = torch.load("data/processed/mimic_tensor.pt")
     
-    # Let's slice the first 5 hourly records for a live test
-    sample_records = real_data_tensor[:5] 
-    
-    for i, patient_tensor in enumerate(sample_records):
-        print(f"\nAnalyzing Real Record #{i+1}...")
-        
-        # Reverse the approximation for display purposes only 
-        # (Assuming dataset means ~85 HR, 110 SBP, 12 WBC for printing)
-        display_hr = (patient_tensor[0].item() * 15.0) + 85.0
-        display_sbp = (patient_tensor[1].item() * 20.0) + 110.0
-        display_wbc = (patient_tensor[2].item() * 4.0) + 12.0
-        
-        print(f"Vitals (Approx) -> Heart Rate: {display_hr:.1f} | SBP: {display_sbp:.1f} | WBC: {display_wbc:.1f}")
-        
-        # 3. Predict Status
+    # 3. Scan through records until we find transient (non-critical) states as well
+    for i, patient_tensor in enumerate(real_data_tensor[:50]):
         with torch.no_grad():
             # Add batch dimension: shape becomes [1, 3]
             _, mu, _ = model(patient_tensor.unsqueeze(0))
@@ -62,15 +50,23 @@ def main():
         raw_bin = int(np.digitize(risk_score, cutoffs))
         state = 3 - raw_bin 
         
-        print(f"Deep Learning Risk Score: {risk_score:.4f}")
-        print(f"Current Markov State: {states_map[state]}")
-        
-        if state == 3:
-            print("ALERT: Patient is already in CRITICAL condition!")
-        else:
+        # Only print if the patient is NOT in the Critical state (State 3)
+        if state < 3:
+            print(f"\nAnalyzing Real Record #{i+1} (Non-Critical)...")
+            
+            # Display logic for human-readable vitals
+            display_hr = (patient_tensor[0].item() * 15.0) + 85.0
+            display_sbp = (patient_tensor[1].item() * 20.0) + 110.0
+            display_wbc = (patient_tensor[2].item() * 4.0) + 12.0
+            print(f"Vitals (Approx) -> Heart Rate: {display_hr:.1f} | SBP: {display_sbp:.1f} | WBC: {display_wbc:.1f}")
+            
+            print(f"Deep Learning Risk Score: {risk_score:.4f}")
+            print(f"Current Markov State: {states_map[state]}")
+            
+            # MGF Phase-Type Output
             countdown = expected_times[state][0]
-            print(f"Prognosis: Expected time to Critical is {countdown:.2f} hours")
-        print("-" * 40)
+            print(f"Prognosis (MGF Mean Time): {countdown:.2f} hours to Critical")
+            print("-" * 40)
 
 if __name__ == "__main__":
     main()
