@@ -4,7 +4,7 @@ from scipy.linalg import inv
 import sys
 import os
 
-# Temporarily add src/vae to path so we can import your model class
+# Temporarily add src/vae to path so we can import the model class
 sys.path.append(os.path.abspath("src/vae"))
 from model import ICU_VAE
 
@@ -16,55 +16,53 @@ def load_expected_times():
     ones_vector = np.ones((3, 1))
     return -np.dot(T_inv, ones_vector)
 
-def predict_patient_status(hr, sbp, wbc):
-    """Passes vitals through the VAE to get the discrete risk state."""
-    # Approximate scaling based on general ICU means to match your tensor
-    scaled_hr = (hr - 85.0) / 15.0
-    scaled_sbp = (sbp - 110.0) / 20.0
-    scaled_wbc = (wbc - 12.0) / 4.0
-    x = torch.FloatTensor([[scaled_hr, scaled_sbp, scaled_wbc]])
-    
-    # Load the trained Neural Network
-    model = ICU_VAE(input_dim=3, hidden_dim=16, latent_dim=1)
-    model.load_state_dict(torch.load("src/vae/vae_checkpoint.pt"))
-    model.eval()
-    
-    with torch.no_grad():
-        _, mu, _ = model(x)
-        risk_score = mu.item()
-        
-    # Cutoffs generated from your training loop
-    # Cutoffs generated from your training loop
-    cutoffs = [-0.41759565, 0.00931145, 0.51120774]
-    raw_bin = int(np.digitize(risk_score, cutoffs))
-    
-    # Invert the axis: VAE learned negative = critical, positive = stable
-    # This maps raw bin 0 -> State 3 (Critical), raw bin 3 -> State 0 (Low Risk)
-    state = 3 - raw_bin 
-    
-    return state, risk_score
-
 def main():
     print("=========================================")
     print("   DEEP-ICU EARLY WARNING SYSTEM LIVE    ")
     print("=========================================\n")
     
-    # Test Case 1: A stable patient
-    patients = [
-        {"name": "Patient A (Stable)", "hr": 75, "sbp": 120, "wbc": 8.5},
-        {"name": "Patient B (Deteriorating)", "hr": 115, "sbp": 88, "wbc": 18.2}
-    ]
-    
+    # 1. Setup & Load Model (Done once for efficiency)
     states_map = ["Low Risk", "Medium Risk", "High Risk", "Critical"]
     expected_times = load_expected_times()
+    cutoffs = [-0.41759565, 0.00931145, 0.51120774]
     
-    for p in patients:
-        print(f"Analyzing {p['name']}...")
-        print(f"Vitals -> Heart Rate: {p['hr']} | SBP: {p['sbp']} | WBC: {p['wbc']}")
+    print("Loading VAE Model...")
+    model = ICU_VAE(input_dim=3, hidden_dim=16, latent_dim=1)
+    model.load_state_dict(torch.load("src/vae/vae_checkpoint.pt"))
+    model.eval()
+
+    # 2. Load Real MIMIC-IV Data
+    print("Loading real MIMIC-IV patient data...")
+    if not os.path.exists("data/processed/mimic_tensor.pt"):
+        print("Error: mimic_tensor.pt not found. Run mimic_parser.py first.")
+        return
         
-        state, score = predict_patient_status(p['hr'], p['sbp'], p['wbc'])
+    real_data_tensor = torch.load("data/processed/mimic_tensor.pt")
+    
+    # Let's slice the first 5 hourly records for a live test
+    sample_records = real_data_tensor[:5] 
+    
+    for i, patient_tensor in enumerate(sample_records):
+        print(f"\nAnalyzing Real Record #{i+1}...")
         
-        print(f"Deep Learning Risk Score: {score:.4f}")
+        # Reverse the approximation for display purposes only 
+        # (Assuming dataset means ~85 HR, 110 SBP, 12 WBC for printing)
+        display_hr = (patient_tensor[0].item() * 15.0) + 85.0
+        display_sbp = (patient_tensor[1].item() * 20.0) + 110.0
+        display_wbc = (patient_tensor[2].item() * 4.0) + 12.0
+        
+        print(f"Vitals (Approx) -> Heart Rate: {display_hr:.1f} | SBP: {display_sbp:.1f} | WBC: {display_wbc:.1f}")
+        
+        # 3. Predict Status
+        with torch.no_grad():
+            # Add batch dimension: shape becomes [1, 3]
+            _, mu, _ = model(patient_tensor.unsqueeze(0))
+            risk_score = mu.item()
+            
+        raw_bin = int(np.digitize(risk_score, cutoffs))
+        state = 3 - raw_bin 
+        
+        print(f"Deep Learning Risk Score: {risk_score:.4f}")
         print(f"Current Markov State: {states_map[state]}")
         
         if state == 3:
