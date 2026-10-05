@@ -18,9 +18,9 @@ def estimate_generator(df, dt_hours=DEFAULT_DT_HOURS):
     where N_ij is the number of observed transitions and T_i is total
     observed exposure time in state i.
 
-    The supplied data are hourly snapshots, so exposure is approximated by
-    the one-hour interval between consecutive observations. Transitions are
-    counted only within the same ICU stay and only across consecutive hours.
+    The supplied data are hourly snapshots, so exposure is approximated by the
+    one-hour interval between consecutive observations. Transitions are counted
+    only within the same ICU stay and only across consecutive hours.
     Critical (state 3) is absorbing, matching the Phase-Type model.
     """
     required = {"stay_id", "hour", "state"}
@@ -82,6 +82,7 @@ def estimate_ctmc(
     latent_path="data/processed/latent_states.csv",
     output_path="data/processed/q_matrix.npy",
     dt_hours=DEFAULT_DT_HOURS,
+    training_only=True,
 ):
     path = Path(latent_path)
     if not path.exists():
@@ -90,6 +91,19 @@ def estimate_ctmc(
         )
 
     df = pd.read_csv(path)
+    if training_only:
+        if "split" not in df.columns:
+            raise ValueError(
+                "latent_states.csv must contain a split column when training_only=True."
+            )
+        df = df[df["split"] == "train"].copy()
+        if df.empty:
+            raise ValueError("The training split contains no trajectory records.")
+        print(
+            f"Estimating CTMC using training split only: "
+            f"{len(df):,} records / {df['stay_id'].nunique():,} ICU stays."
+        )
+
     Q, transition_counts, exposure_hours = estimate_generator(df, dt_hours)
 
     np.save(output_path, Q)
