@@ -27,7 +27,12 @@ TEST_FRACTION = 0.15
 
 
 def assign_stay_splits(stay_ids, seed=RANDOM_SEED):
-    """Assign complete ICU stays to train/validation/test without patient-row leakage."""
+    """Assign complete ICU stays to train/validation/test without row leakage.
+
+    Kept as a small public helper for regression tests. The production parser
+    uses the equivalent patient-level split below so multiple ICU stays from
+    one subject cannot appear in different splits.
+    """
     unique_stays = np.array(sorted(pd.Series(stay_ids).dropna().unique()))
     if len(unique_stays) < 3:
         raise ValueError("At least 3 ICU stays are required for train/validation/test splits.")
@@ -137,11 +142,31 @@ def parse_mimic_data():
         [usable_stays.tolist(), range(WINDOW_HOURS)],
         names=["stay_id", "hour"],
     ).to_frame(index=False)
+    stay_subject = stays[["stay_id", "subject_id"]].drop_duplicates("stay_id")
+    full_index = full_index.merge(stay_subject, on="stay_id", how="left")
     pivot = full_index.merge(pivot, on=["stay_id", "hour"], how="left")
-    pivot = pivot.sort_values(["stay_id", "hour"]).reset_index(drop=True)
+    pivot = pivot.sort_values(["subject_id", "stay_id", "hour"]).reset_index(drop=True)
 
-    split_map = assign_stay_splits(pivot["stay_id"])
-    pivot["split"] = pivot["stay_id"].map(split_map)
+    # Patient-level split: every ICU stay from the same subject remains in
+    # exactly one split, preventing inter-stay patient leakage.
+    subject_ids = np.array(sorted(pivot["subject_id"].dropna().unique()))
+    if len(subject_ids) < 3:
+        raise ValueError("At least 3 subjects are required for train/validation/test splits.")
+    rng = np.random.default_rng(RANDOM_SEED)
+    shuffled_subjects = subject_ids.copy()
+    rng.shuffle(shuffled_subjects)
+    n_subjects = len(shuffled_subjects)
+    n_train = max(1, int(np.floor(n_subjects * TRAIN_FRACTION)))
+    n_val = max(1, int(np.floor(n_subjects * VAL_FRACTION)))
+    n_test = n_subjects - n_train - n_val
+    if n_test < 1:
+        n_test = 1
+        n_train -= 1
+    subject_split = {}
+    subject_split.update({sid: "train" for sid in shuffled_subjects[:n_train]})
+    subject_split.update({sid: "validation" for sid in shuffled_subjects[n_train:n_train + n_val]})
+    subject_split.update({sid: "test" for sid in shuffled_subjects[n_train + n_val:]})
+    pivot["split"] = pivot["subject_id"].map(subject_split)
 
     if pivot["split"].isna().any():
         raise RuntimeError("Some ICU stays were not assigned to a data split.")
@@ -159,7 +184,7 @@ def parse_mimic_data():
     if pivot[FEATURES].isna().any().any():
         raise ValueError("Missing feature values remain after train-only imputation.")
 
-    index_df = pivot[["stay_id", "hour", "split"] + FEATURES].copy()
+    index_df = pivot[["subject_id", "stay_id", "hour", "split"] + FEATURES].copy()
 
     print("6. Scaling features using training stays only...")
     scaler = StandardScaler()
@@ -171,9 +196,12 @@ def parse_mimic_data():
     index_df.to_csv(PROCESSED_DIR / "mimic_index.csv", index=False)
 
     split_summary = (
-        index_df.groupby("split")["stay_id"]
-        .agg(["nunique", "count"])
-        .rename(columns={"nunique": "icu_stays", "count": "hourly_records"})
+        index_df.groupby("split")
+        .agg(
+            patients=("subject_id", "nunique"),
+            icu_stays=("stay_id", "nunique"),
+            hourly_records=("stay_id", "size"),
+        )
         .reindex(["train", "validation", "test"])
     )
     split_summary.to_csv(PROCESSED_DIR / "split_summary.csv")
