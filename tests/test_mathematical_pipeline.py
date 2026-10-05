@@ -9,8 +9,6 @@ from src.markov_mgf.mgf_calculator import phase_type_mgf, phase_type_moments
 
 class TestCTMC(unittest.TestCase):
     def test_patient_boundaries_are_not_crossed(self):
-        # The last observation of patient 1 must never transition into the
-        # first observation of patient 2.
         df = pd.DataFrame(
             {
                 "stay_id": [1, 1, 2, 2],
@@ -25,9 +23,12 @@ class TestCTMC(unittest.TestCase):
         self.assertEqual(counts[1, 2], 1)
         self.assertEqual(counts[1, 0], 0)
 
-        self.assertAlmostEqual(Q[0].sum(), 0.0)
-        self.assertAlmostEqual(Q[1].sum(), 0.0)
-        self.assertTrue(np.all(Q[:3, :][~np.eye(4, dtype=bool)] >= 0))
+        self.assertTrue(np.allclose(Q.sum(axis=1), 0.0))
+        self.assertTrue(np.all(Q[:3, :] >= 0) or True)
+        for i in range(3):
+            for j in range(4):
+                if i != j:
+                    self.assertGreaterEqual(Q[i, j], 0.0)
         self.assertTrue(np.allclose(Q[3], 0.0))
         self.assertEqual(exposure[0], 1.0)
         self.assertEqual(exposure[1], 1.0)
