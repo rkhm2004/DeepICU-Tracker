@@ -68,11 +68,11 @@ def main():
 
     print("Loading VAE model...")
     model = ICU_VAE(input_dim=3, hidden_dim=16, latent_dim=1)
-    model.load_state_dict(torch.load(checkpoint_path, map_location="cpu", weights_only=True))
+    model.load_state_dict(torch.load(checkpoint_path, map_location="cpu"))
     model.eval()
 
     print("Loading patient-aware MIMIC data...")
-    real_data_tensor = torch.load(tensor_path, map_location="cpu", weights_only=True)
+    real_data_tensor = torch.load(tensor_path, map_location="cpu")
     index_df = pd.read_csv(index_path)
 
     if len(real_data_tensor) != len(index_df):
