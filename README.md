@@ -283,18 +283,33 @@ the proposed architecture in the project review:
 7. **Regression tests** — `tests/test_mathematical_pipeline.py` checks that patient
    trajectories do not leak into one another, `P(t)=exp(Qt)` is stochastic, and the
    Phase-Type MGF/moments satisfy basic mathematical sanity checks.
+8. **Leakage-safe ML evaluation** — the parser assigns subjects (and therefore all of
+   their ICU stays) to train/validation/test before model fitting. Training-only medians
+   and StandardScaler statistics are saved in `preprocessing.json`; the VAE trains on
+   train records, selects its checkpoint using validation loss, reports untouched test
+   loss, and learns latent-state cutoffs from the training split only. CTMC estimation
+   also uses the training trajectories only, while inference can score all saved records.
 
 ### Current execution order
 
-```bash
+Run these commands from the repository root after activating the virtual environment:
+
+```powershell
+python -m unittest tests/test_mathematical_pipeline.py
 python src/data_pipeline/mimic_parser.py
 python src/vae/train.py
 python src/markov_mgf/ctmc_estimator.py
 python src/markov_mgf/mgf_calculator.py
 python src/inference.py
 python src/plot.py
-python -m unittest tests/test_mathematical_pipeline.py
 ```
+
+The parser creates a deterministic patient-level 70/15/15 train/validation/test split.
+It fits imputation fallback medians and StandardScaler parameters on the training
+subjects only. The VAE uses the training split for optimization, validation loss for
+checkpoint selection/early stopping, and the test split only for final evaluation.
+The CTMC is estimated from training trajectories only. Re-run the parser whenever you
+change the split/preprocessing code so all downstream artifacts are regenerated.
 
 The Bayesian Network remains intentionally pending. Its planned role is still Stage 4:
 connect static patient/admission priors with the real-time VAE/Markov risk state to provide
