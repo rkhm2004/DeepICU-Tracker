@@ -1,101 +1,140 @@
-import torch
-import numpy as np
-from scipy.linalg import inv
-import sys
+import json
 import os
-import csv
+import sys
+from pathlib import Path
 
-# Temporarily add src/vae to path so we can import the model class
-sys.path.append(os.path.abspath("src/vae"))
+import numpy as np
+import pandas as pd
+import torch
+from scipy.linalg import inv
+
+sys.path.insert(0, os.path.abspath("src/vae"))
 from model import ICU_VAE
 
-def load_expected_times():
-    """Calculates the exact hours to critical using the stored Q matrix."""
-    Q = np.load("data/processed/q_matrix.npy")
+
+STATE_NAMES = ["Low Risk", "Medium Risk", "High Risk", "Critical"]
+
+
+def load_vae_metadata(path="data/processed/vae_metadata.json"):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def latent_to_state(risk_score, cutoffs):
+    raw_bin = int(np.digitize(risk_score, np.asarray(cutoffs)))
+    return 3 - raw_bin
+
+
+def load_phase_type_summary(q_path="data/processed/q_matrix.npy"):
+    Q = np.asarray(np.load(q_path), dtype=float)
+    if Q.shape != (4, 4) or not np.allclose(Q.sum(axis=1), 0.0, atol=1e-10):
+        raise ValueError("q_matrix.npy is not a valid 4-state CTMC generator.")
+    if not np.allclose(Q[3], 0.0, atol=1e-10):
+        raise ValueError("Critical state must be absorbing.")
+
     T = Q[:3, :3]
+    ones = np.ones(3)
     T_inv = inv(T)
-    ones_vector = np.ones((3, 1))
-    return -np.dot(T_inv, ones_vector)
+    means = -T_inv @ ones
+    second_moments = 2.0 * (T_inv @ T_inv) @ ones
+    variances = np.maximum(second_moments - means**2, 0.0)
+    stds = np.sqrt(variances)
+    return Q, means, stds
+
 
 def main():
     print("=========================================")
     print("   DEEP-ICU EARLY WARNING SYSTEM LIVE    ")
     print("=========================================\n")
-    
-    # 1. Setup & Load Model
-    states_map = ["Low Risk", "Medium Risk", "High Risk", "Critical"]
-    expected_times = load_expected_times()
-    cutoffs = [-0.41759565, 0.00931145, 0.51120774]
-    
-    print("Loading VAE Model...")
+
+    tensor_path = Path("data/processed/mimic_tensor.pt")
+    index_path = Path("data/processed/mimic_index.csv")
+    checkpoint_path = Path("src/vae/vae_checkpoint.pt")
+    metadata_path = Path("data/processed/vae_metadata.json")
+    q_path = Path("data/processed/q_matrix.npy")
+
+    required = [tensor_path, index_path, checkpoint_path, metadata_path, q_path]
+    missing = [str(p) for p in required if not p.exists()]
+    if missing:
+        raise FileNotFoundError(
+            "Missing artifacts. Run the data parser, VAE training, and CTMC "
+            f"estimator first: {missing}"
+        )
+
+    metadata = load_vae_metadata(metadata_path)
+    cutoffs = metadata["cutoffs"]
+
+    Q, expected_times, std_times = load_phase_type_summary(q_path)
+
+    print("Loading VAE model...")
     model = ICU_VAE(input_dim=3, hidden_dim=16, latent_dim=1)
-    model.load_state_dict(torch.load("src/vae/vae_checkpoint.pt"))
+    model.load_state_dict(torch.load(checkpoint_path, map_location="cpu", weights_only=True))
     model.eval()
 
-    # 2. Load Real MIMIC-IV Data
-    print("Loading real MIMIC-IV patient data...")
-    if not os.path.exists("data/processed/mimic_tensor.pt"):
-        print("Error: mimic_tensor.pt not found. Run mimic_parser.py first.")
-        return
-        
-    real_data_tensor = torch.load("data/processed/mimic_tensor.pt")
-    total_records = len(real_data_tensor)
-    
-    # 3. Setup Results Directory and CSV File
+    print("Loading patient-aware MIMIC data...")
+    real_data_tensor = torch.load(tensor_path, map_location="cpu", weights_only=True)
+    index_df = pd.read_csv(index_path)
+
+    if len(real_data_tensor) != len(index_df):
+        raise ValueError("Tensor rows and trajectory index rows are not aligned.")
+
+    print(f"Total records found: {len(real_data_tensor):,}")
+
+    rows = []
+    with torch.no_grad():
+        for i, patient_tensor in enumerate(real_data_tensor):
+            _, mu, _ = model(patient_tensor.unsqueeze(0))
+            risk_score = float(mu.item())
+
+            state = latent_to_state(risk_score, cutoffs)
+
+            if state == 3:
+                countdown_mean = 0.0
+                countdown_std = 0.0
+            else:
+                countdown_mean = float(expected_times[state])
+                countdown_std = float(std_times[state])
+
+            meta = index_df.iloc[i]
+            rows.append(
+                {
+                    "record_id": i + 1,
+                    "stay_id": int(meta["stay_id"]),
+                    "hour": int(meta["hour"]),
+                    "heart_rate": float(meta["heart_rate"]),
+                    "sbp": float(meta["sbp"]),
+                    "wbc": float(meta["wbc"]),
+                    "risk_score_mu": round(risk_score, 6),
+                    "markov_state": state,
+                    "state_name": STATE_NAMES[state],
+                    "hours_to_critical_mean": round(countdown_mean, 4),
+                    "hours_to_critical_sd": round(countdown_std, 4),
+                }
+            )
+
+    results = pd.DataFrame(rows)
     os.makedirs("results", exist_ok=True)
     csv_filename = "results/inference_results.csv"
-    
-    print(f"Total records found: {total_records}")
-    print(f"Starting batch inference... Saving results to {csv_filename}")
-    print("-" * 40)
+    results.to_csv(csv_filename, index=False)
 
-    with open(csv_filename, mode='w', newline='') as csv_file:
-        writer = csv.writer(csv_file)
-        
-        # Write the CSV Header
-        writer.writerow(["record_id", "heart_rate", "sbp", "wbc", 
-                         "risk_score_mu", "markov_state", "state_name", "hours_to_critical"])
-        
-        # 4. Process ALL records to generate a massive dataset for plotting
-        for i, patient_tensor in enumerate(real_data_tensor):
-            with torch.no_grad():
-                # Add batch dimension: shape becomes [1, 3]
-                _, mu, _ = model(patient_tensor.unsqueeze(0))
-                risk_score = mu.item()
-                
-            raw_bin = int(np.digitize(risk_score, cutoffs))
-            state = 3 - raw_bin 
-            
-            # Display logic for human-readable vitals
-            display_hr = (patient_tensor[0].item() * 15.0) + 85.0
-            display_sbp = (patient_tensor[1].item() * 20.0) + 110.0
-            display_wbc = (patient_tensor[2].item() * 4.0) + 12.0
-            
-            # Expected time logic
-            if state == 3:
-                countdown = 0.0
-            else:
-                countdown = expected_times[state][0]
-                
-            # Save the row to the CSV
-            writer.writerow([
-                i + 1,
-                round(display_hr, 2),
-                round(display_sbp, 2),
-                round(display_wbc, 2),
-                round(risk_score, 4),
-                state,
-                states_map[state],
-                round(countdown, 2)
-            ])
-            
-            # Print only the first 3 records to the terminal to confirm it's running
-            if i < 3:
-                print(f"Analyzed Record #{i+1} -> Score: {risk_score:.4f} | State: {states_map[state]}")
+    print("\n--- CTMC Q Matrix ---")
+    print(np.round(Q, 6))
+    print("\n--- Example predictions ---")
+    print(
+        results[
+            [
+                "record_id",
+                "stay_id",
+                "hour",
+                "risk_score_mu",
+                "state_name",
+                "hours_to_critical_mean",
+                "hours_to_critical_sd",
+            ]
+        ].head(5).to_string(index=False)
+    )
+    print(f"\nSUCCESS! Saved {len(results):,} predictions to {csv_filename}")
 
-    print("-" * 40)
-    print(f"SUCCESS! Inference complete.")
-    print(f"Saved all {total_records} data points to: {csv_filename}")
 
 if __name__ == "__main__":
     main()
