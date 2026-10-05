@@ -46,7 +46,7 @@ def train_vae(epochs=50, batch_size=64, learning_rate=1e-3):
         )
 
     print("1. Loading processed MIMIC tensor...")
-    data = torch.load(tensor_path, weights_only=True)
+    data = torch.load(tensor_path)
     index_df = pd.read_csv(index_path)
 
     if len(data) != len(index_df):
@@ -92,8 +92,6 @@ def train_vae(epochs=50, batch_size=64, learning_rate=1e-3):
     cutoffs = np.quantile(mu_np, [0.25, 0.50, 0.75])
     states = latent_to_state(mu_np, cutoffs)
 
-    # Persist the exact mapping used during training. Inference must never
-    # re-create or manually hard-code these values.
     metadata = {
         "state_names": STATE_NAMES,
         "cutoffs": cutoffs.tolist(),
@@ -110,7 +108,6 @@ def train_vae(epochs=50, batch_size=64, learning_rate=1e-3):
     latent_df["state_name"] = [STATE_NAMES[s] for s in states]
     latent_df.to_csv("data/processed/latent_states.csv", index=False)
 
-    # Keep the tensor artifact for compatibility with the existing workflow.
     torch.save(torch.tensor(states, dtype=torch.long), "data/processed/latent_states.pt")
 
     print(f"   Cutoffs (ascending mu): {cutoffs}")
