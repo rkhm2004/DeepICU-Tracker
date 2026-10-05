@@ -12,7 +12,6 @@ ICU_DIR = BASE_DIR / "icu"
 HOSP_DIR = BASE_DIR / "hosp"
 PROCESSED_DIR = Path("data/processed")
 
-# MIMIC-IV item IDs for the three features used by the current prototype.
 ITEM_IDS = {
     "heart_rate": 220045,
     "sbp": 220179,
@@ -35,10 +34,10 @@ def _assign_labs_to_icu_stays(labs: pd.DataFrame, stays: pd.DataFrame) -> pd.Dat
 
 
 def parse_mimic_data():
-    """Build a uniformly sampled, patient-aware 48-hour ICU tensor.
+    """Build a patient-aware, uniformly sampled 48-hour ICU tensor.
 
     The tensor rows are kept in exactly the same order as
-    data/processed/mimic_index.csv so downstream CTMC estimation can never
+    data/processed/mimic_index.csv so downstream CTMC estimation cannot
     create a transition across two different ICU stays.
     """
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
@@ -98,8 +97,8 @@ def parse_mimic_data():
         .reset_index()
     )
 
-    # Keep only stays with at least one usable observation. Then construct a
-    # complete 0..47 hour grid so a one-hour transition really means one hour.
+    # Build a complete 0..47 hour grid for each stay that has at least one
+    # usable observation. This makes a one-row transition correspond to 1 hour.
     usable_stays = pivot["stay_id"].drop_duplicates()
     full_index = pd.MultiIndex.from_product(
         [usable_stays.tolist(), range(WINDOW_HOURS)],
@@ -109,13 +108,17 @@ def parse_mimic_data():
     pivot = pivot.sort_values(["stay_id", "hour"]).reset_index(drop=True)
 
     print("5. Imputing missing values and scaling...")
-    pivot[FEATURES] = pivot.groupby("stay_id", group_keys=False)[FEATURES].ffill().bfill()
+    # Forward/backward fill strictly within each ICU stay. Do not let the
+    # first/last value of one patient leak into another patient's trajectory.
+    pivot[FEATURES] = pivot.groupby("stay_id")[FEATURES].transform(
+        lambda group: group.ffill().bfill()
+    )
+
+    # If a stay has no observation for a feature at all, use the cohort median.
     pivot[FEATURES] = pivot[FEATURES].fillna(pivot[FEATURES].median(numeric_only=True))
     if pivot[FEATURES].isna().any().any():
         raise ValueError("Missing feature values remain after imputation.")
 
-    # Save the raw, patient-aware index before scaling. This is the contract
-    # between data preprocessing, VAE inference, and CTMC trajectory fitting.
     index_df = pivot[["stay_id", "hour"] + FEATURES].copy()
     index_df.to_csv(PROCESSED_DIR / "mimic_index.csv", index=False)
 
