@@ -1,6 +1,13 @@
 # Ignore raw patient data
 data/raw/
 
+# Generated processed/model artifacts
+data/processed/*.pt
+data/processed/*.npy
+data/processed/*.csv
+data/processed/*.json
+results/
+
 # Python caches and environments
 __pycache__/
 *.py[cod]
@@ -8,4 +15,3 @@ __pycache__/
 .env
 venv/
 .venv/
-*.pt
