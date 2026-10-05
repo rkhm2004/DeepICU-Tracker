@@ -1,28 +1,87 @@
-
 import numpy as np
 from scipy.linalg import inv
 
-def calculate_expected_time():
-    print("1. Loading Q Matrix...")
-    Q = np.load("data/processed/q_matrix.npy")
-    
-    print("2. Extracting Transient Matrix (T)...")
-    # State 3 (Critical) is the absorbing state. 
-    # T is the 3x3 sub-matrix of transient states: 0 (Low), 1 (Medium), 2 (High)
+
+STATE_NAMES = ["Low Risk", "Medium Risk", "High Risk"]
+
+
+def load_transient_generator(q_path="data/processed/q_matrix.npy"):
+    """Load Q and return the transient sub-generator T."""
+    Q = np.asarray(np.load(q_path), dtype=float)
+
+    if Q.shape != (4, 4):
+        raise ValueError(f"Expected a 4x4 Q matrix, got {Q.shape}.")
+    if not np.allclose(Q.sum(axis=1), 0.0, atol=1e-10):
+        raise ValueError("Q must have row sums equal to zero.")
+    if not np.allclose(Q[3], 0.0, atol=1e-10):
+        raise ValueError("State 3 (Critical) must be absorbing.")
+
     T = Q[:3, :3]
-    print(np.round(T, 4))
-    
-    print("\n3. Calculating Expected Time to Critical...")
-    # Using the Phase-Type distribution expectation formula: E[X] = -T^(-1) * 1
+    absorption_rates = -T @ np.ones(3)
+
+    if np.any(absorption_rates <= 0):
+        raise ValueError(
+            "At least one transient state has no path/rate to absorption; "
+            "the Phase-Type mean is not finite for that state."
+        )
+
+    return Q, T
+
+
+def phase_type_mgf(s, initial_state, T):
+    """Moment-generating function M_tau(s) of absorption time.
+
+    For a Phase-Type distribution with initial row vector alpha,
+        M_tau(s) = alpha [-(T + sI)^(-1)] t
+    where t = -T 1 is the absorption-rate vector.
+    """
+    if not 0 <= initial_state < T.shape[0]:
+        raise ValueError("initial_state must be 0, 1, or 2.")
+
+    alpha = np.zeros(T.shape[0])
+    alpha[initial_state] = 1.0
+    ones = np.ones(T.shape[0])
+    absorption = -T @ ones
+    system = -(T + float(s) * np.eye(T.shape[0]))
+
+    return float(alpha @ inv(system) @ absorption)
+
+
+def phase_type_moments(T):
+    """Return mean, variance and standard deviation by starting state."""
+    ones = np.ones(T.shape[0])
     T_inv = inv(T)
-    ones_vector = np.ones((3, 1))
-    
-    expected_times = -np.dot(T_inv, ones_vector)
-    
-    states = ["Low Risk (State 0)", "Medium Risk (State 1)", "High Risk (State 2)"]
-    print("\n--- Clinical Prognosis ---")
-    for i, state in enumerate(states):
-        print(f"If patient is in {state} -> Expected time to Critical: {expected_times[i][0]:.2f} hours")
+
+    first_moment = -T_inv @ ones
+    second_moment = 2.0 * (T_inv @ T_inv) @ ones
+    variance = second_moment - np.square(first_moment)
+    variance = np.maximum(variance, 0.0)
+
+    return first_moment, variance, np.sqrt(variance)
+
+
+def calculate_expected_time(q_path="data/processed/q_matrix.npy"):
+    Q, T = load_transient_generator(q_path)
+    means, variances, stds = phase_type_moments(T)
+
+    print("--- Phase-Type Prognosis ---")
+    print("Transient generator T:")
+    print(np.round(T, 6))
+
+    for i, state in enumerate(STATE_NAMES):
+        print(
+            f"{state}: E[tau]={means[i]:.2f} h, "
+            f"SD={stds[i]:.2f} h, Var={variances[i]:.2f} h^2"
+        )
+
+    # Sanity check: an MGF evaluated at s=0 must equal 1.
+    for i in range(3):
+        value_at_zero = phase_type_mgf(0.0, i, T)
+        if not np.isclose(value_at_zero, 1.0, atol=1e-8):
+            raise RuntimeError("Phase-Type MGF sanity check failed.")
+
+    return means, variances, stds
+
 
 if __name__ == "__main__":
     calculate_expected_time()
