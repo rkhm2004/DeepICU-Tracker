@@ -20,6 +20,40 @@ ITEM_IDS = {
 
 FEATURES = ["heart_rate", "sbp", "wbc"]
 WINDOW_HOURS = 48
+RANDOM_SEED = 42
+TRAIN_FRACTION = 0.70
+VAL_FRACTION = 0.15
+TEST_FRACTION = 0.15
+
+
+def assign_stay_splits(stay_ids, seed=RANDOM_SEED):
+    """Assign complete ICU stays to train/validation/test without patient-row leakage."""
+    unique_stays = np.array(sorted(pd.Series(stay_ids).dropna().unique()))
+    if len(unique_stays) < 3:
+        raise ValueError("At least 3 ICU stays are required for train/validation/test splits.")
+
+    rng = np.random.default_rng(seed)
+    shuffled = unique_stays.copy()
+    rng.shuffle(shuffled)
+
+    n = len(shuffled)
+    n_train = max(1, int(np.floor(n * TRAIN_FRACTION)))
+    n_val = max(1, int(np.floor(n * VAL_FRACTION)))
+    n_test = n - n_train - n_val
+
+    if n_test < 1:
+        n_test = 1
+        n_train -= 1
+
+    split = {}
+    split.update({stay_id: "train" for stay_id in shuffled[:n_train]})
+    split.update(
+        {stay_id: "validation" for stay_id in shuffled[n_train:n_train + n_val]}
+    )
+    split.update(
+        {stay_id: "test" for stay_id in shuffled[n_train + n_val:]}
+    )
+    return split
 
 
 def _assign_labs_to_icu_stays(labs: pd.DataFrame, stays: pd.DataFrame) -> pd.DataFrame:
@@ -34,11 +68,12 @@ def _assign_labs_to_icu_stays(labs: pd.DataFrame, stays: pd.DataFrame) -> pd.Dat
 
 
 def parse_mimic_data():
-    """Build a patient-aware, uniformly sampled 48-hour ICU tensor.
+    """Build patient-aware 48-hour trajectories with train-only preprocessing statistics.
 
-    The tensor rows are kept in exactly the same order as
-    data/processed/mimic_index.csv so downstream CTMC estimation cannot
-    create a transition across two different ICU stays.
+    ICU stays, rather than individual hourly rows, are randomly assigned to
+    train/validation/test. Missing-value medians and StandardScaler statistics
+    are fitted on training stays only, then applied to validation/test stays.
+    This prevents information from validation/test stays leaking into training.
     """
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -97,8 +132,6 @@ def parse_mimic_data():
         .reset_index()
     )
 
-    # Build a complete 0..47 hour grid for each stay that has at least one
-    # usable observation. This makes a one-row transition correspond to 1 hour.
     usable_stays = pivot["stay_id"].drop_duplicates()
     full_index = pd.MultiIndex.from_product(
         [usable_stays.tolist(), range(WINDOW_HOURS)],
@@ -107,31 +140,57 @@ def parse_mimic_data():
     pivot = full_index.merge(pivot, on=["stay_id", "hour"], how="left")
     pivot = pivot.sort_values(["stay_id", "hour"]).reset_index(drop=True)
 
-    print("5. Imputing missing values and scaling...")
-    # Forward/backward fill strictly within each ICU stay. Do not let the
-    # first/last value of one patient leak into another patient's trajectory.
+    split_map = assign_stay_splits(pivot["stay_id"])
+    pivot["split"] = pivot["stay_id"].map(split_map)
+
+    if pivot["split"].isna().any():
+        raise RuntimeError("Some ICU stays were not assigned to a data split.")
+
+    print("5. Imputing missing values using training-only statistics...")
     pivot[FEATURES] = pivot.groupby("stay_id")[FEATURES].transform(
         lambda group: group.ffill().bfill()
     )
 
-    # If a stay has no observation for a feature at all, use the cohort median.
-    pivot[FEATURES] = pivot[FEATURES].fillna(pivot[FEATURES].median(numeric_only=True))
+    # Fit fallback medians on training stays only.
+    train_mask = pivot["split"] == "train"
+    train_medians = pivot.loc[train_mask, FEATURES].median()
+    pivot[FEATURES] = pivot[FEATURES].fillna(train_medians)
+
     if pivot[FEATURES].isna().any().any():
-        raise ValueError("Missing feature values remain after imputation.")
+        raise ValueError("Missing feature values remain after train-only imputation.")
 
-    index_df = pivot[["stay_id", "hour"] + FEATURES].copy()
-    index_df.to_csv(PROCESSED_DIR / "mimic_index.csv", index=False)
+    index_df = pivot[["stay_id", "hour", "split"] + FEATURES].copy()
 
+    print("6. Scaling features using training stays only...")
     scaler = StandardScaler()
-    scaled_features = scaler.fit_transform(index_df[FEATURES].values)
+    scaler.fit(index_df.loc[index_df["split"] == "train", FEATURES].values)
+    scaled_features = scaler.transform(index_df[FEATURES].values)
+
     tensor_data = torch.tensor(scaled_features, dtype=torch.float32)
     torch.save(tensor_data, PROCESSED_DIR / "mimic_tensor.pt")
+    index_df.to_csv(PROCESSED_DIR / "mimic_index.csv", index=False)
+
+    split_summary = (
+        index_df.groupby("split")["stay_id"]
+        .agg(["nunique", "count"])
+        .rename(columns={"nunique": "icu_stays", "count": "hourly_records"})
+        .reindex(["train", "validation", "test"])
+    )
+    split_summary.to_csv(PROCESSED_DIR / "split_summary.csv")
 
     preprocessing = {
         "features": FEATURES,
-        "mean": scaler.mean_.tolist(),
-        "scale": scaler.scale_.tolist(),
         "window_hours": WINDOW_HOURS,
+        "random_seed": RANDOM_SEED,
+        "split_fractions": {
+            "train": TRAIN_FRACTION,
+            "validation": VAL_FRACTION,
+            "test": TEST_FRACTION,
+        },
+        "imputation_median": train_medians.tolist(),
+        "scaler_mean": scaler.mean_.tolist(),
+        "scaler_scale": scaler.scale_.tolist(),
+        "fit_on_split": "train",
     }
     with open(PROCESSED_DIR / "preprocessing.json", "w", encoding="utf-8") as f:
         json.dump(preprocessing, f, indent=2)
@@ -140,8 +199,11 @@ def parse_mimic_data():
         f"Success! Extracted {len(index_df):,} hourly records across "
         f"{index_df['stay_id'].nunique():,} ICU stays."
     )
-    print(f"Saved tensor: {PROCESSED_DIR / 'mimic_tensor.pt'}")
+    print("\n--- Stay-level split ---")
+    print(split_summary.to_string())
+    print(f"\nSaved tensor: {PROCESSED_DIR / 'mimic_tensor.pt'}")
     print(f"Saved trajectory index: {PROCESSED_DIR / 'mimic_index.csv'}")
+    print(f"Saved preprocessing metadata: {PROCESSED_DIR / 'preprocessing.json'}")
 
     return tensor_data
 
