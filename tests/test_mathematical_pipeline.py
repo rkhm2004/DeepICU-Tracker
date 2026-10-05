@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
+from src.data_pipeline.mimic_parser import assign_stay_splits
 from src.markov_mgf.ctmc_estimator import estimate_generator, transition_matrix
 from src.markov_mgf.mgf_calculator import phase_type_mgf, phase_type_moments
 
@@ -72,6 +73,18 @@ class TestPhaseType(unittest.TestCase):
         self.assertTrue(np.all(means > 0))
         self.assertTrue(np.all(variances >= 0))
         self.assertTrue(np.all(stds >= 0))
+
+
+
+class TestDataSplitting(unittest.TestCase):
+    def test_stay_split_is_reproducible_and_exclusive(self):
+        stay_ids = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        first = assign_stay_splits(stay_ids, seed=42)
+        second = assign_stay_splits(stay_ids, seed=42)
+
+        self.assertEqual(first, second)
+        self.assertEqual(set(first), set(stay_ids))
+        self.assertEqual(set(first.values()), {"train", "validation", "test"})
 
 
 if __name__ == "__main__":
