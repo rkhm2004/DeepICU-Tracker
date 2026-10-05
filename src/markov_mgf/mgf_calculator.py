@@ -17,21 +17,21 @@ def load_transient_generator(q_path="data/processed/q_matrix.npy"):
         raise ValueError("State 3 (Critical) must be absorbing.")
 
     T = Q[:3, :3]
-    absorption_rates = -T @ np.ones(3)
-
-    if np.any(absorption_rates <= 0):
+    try:
+        inv(T)
+    except np.linalg.LinAlgError as exc:
         raise ValueError(
-            "At least one transient state has no path/rate to absorption; "
-            "the Phase-Type mean is not finite for that state."
-        )
+            "The transient generator T is singular; absorption time is not "
+            "finite for all transient starting states."
+        ) from exc
 
     return Q, T
 
 
 def phase_type_mgf(s, initial_state, T):
-    """Moment-generating function M_tau(s) of absorption time.
+    """Moment-generating function of the Phase-Type absorption time.
 
-    For a Phase-Type distribution with initial row vector alpha,
+    For initial row vector alpha:
         M_tau(s) = alpha [-(T + sI)^(-1)] t
     where t = -T 1 is the absorption-rate vector.
     """
@@ -55,7 +55,11 @@ def phase_type_moments(T):
     first_moment = -T_inv @ ones
     second_moment = 2.0 * (T_inv @ T_inv) @ ones
     variance = second_moment - np.square(first_moment)
-    variance = np.maximum(variance, 0.0)
+
+    # Small negative values can arise from floating-point round-off.
+    variance = np.where(variance < 0, np.maximum(variance, -1e-10), variance)
+    if np.any(variance < 0) or np.any(first_moment <= 0):
+        raise ValueError("Invalid Phase-Type moments; check the estimated Q matrix.")
 
     return first_moment, variance, np.sqrt(variance)
 
@@ -74,7 +78,6 @@ def calculate_expected_time(q_path="data/processed/q_matrix.npy"):
             f"SD={stds[i]:.2f} h, Var={variances[i]:.2f} h^2"
         )
 
-    # Sanity check: an MGF evaluated at s=0 must equal 1.
     for i in range(3):
         value_at_zero = phase_type_mgf(0.0, i, T)
         if not np.isclose(value_at_zero, 1.0, atol=1e-8):
