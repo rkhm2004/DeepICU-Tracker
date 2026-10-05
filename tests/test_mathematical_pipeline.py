@@ -24,7 +24,6 @@ class TestCTMC(unittest.TestCase):
         self.assertEqual(counts[1, 0], 0)
 
         self.assertTrue(np.allclose(Q.sum(axis=1), 0.0))
-        self.assertTrue(np.all(Q[:3, :] >= 0) or True)
         for i in range(3):
             for j in range(4):
                 if i != j:
