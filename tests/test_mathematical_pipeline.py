@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_pipeline.mimic_parser import assign_stay_splits
+from src.evaluation import _first_critical_remaining_hours
 from src.markov_mgf.ctmc_estimator import estimate_generator, transition_matrix
 from src.markov_mgf.mgf_calculator import phase_type_mgf, phase_type_moments
 
@@ -77,6 +78,11 @@ class TestPhaseType(unittest.TestCase):
 
 
 class TestDataSplitting(unittest.TestCase):
+    def test_first_critical_remaining_time_is_stay_local(self):
+        df = pd.DataFrame({"hour": [0, 1, 2], "state": [0, 3, 2]})
+        remaining = _first_critical_remaining_hours(df)
+        self.assertEqual(list(remaining), [1.0, 0.0, -1.0])
+
     def test_stay_split_is_reproducible_and_exclusive(self):
         stay_ids = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
         first = assign_stay_splits(stay_ids, seed=42)
