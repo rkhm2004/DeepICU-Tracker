@@ -302,6 +302,7 @@ python src/markov_mgf/ctmc_estimator.py
 python src/markov_mgf/mgf_calculator.py
 python src/inference.py
 python src/plot.py
+python src/evaluation.py
 ```
 
 The parser creates a deterministic patient-level 70/15/15 train/validation/test split.
@@ -314,3 +315,28 @@ change the split/preprocessing code so all downstream artifacts are regenerated.
 The Bayesian Network remains intentionally pending. Its planned role is still Stage 4:
 connect static patient/admission priors with the real-time VAE/Markov risk state to provide
 the causal/root-cause explanation described by the project architecture.
+
+
+## 11. Evaluation and leakage verification
+
+After the complete pipeline has run, execute:
+
+```powershell
+python src/evaluation.py
+```
+
+The evaluation module performs the following checks and produces report-ready outputs:
+
+- verifies that no patient appears in more than one train/validation/test split;
+- verifies that preprocessing metadata reports train-only fitting;
+- verifies that VAE state cutoffs were fitted on the training split;
+- reports VAE total, reconstruction, and KL loss separately for train/validation/test;
+- reports Low/Medium/High/Critical state distributions for each split;
+- recomputes the training-only CTMC transition counts and exposure;
+- compares Phase-Type expected time-to-Critical against observed remaining time on uncensored test trajectories (stays that actually reach Critical inside the 48-hour window);
+- writes `results/evaluation_report.json` and `results/vae_split_metrics.csv`;
+- generates evaluation graphs in `results/`.
+
+The observed prognosis comparison is descriptive only. A test stay that never reaches Critical within the 48-hour observation window is right-censored and is not treated as a zero-time event.
+
+Generated artifacts are ignored by Git and should not be committed with patient data.
