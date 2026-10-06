@@ -227,7 +227,7 @@ def parse_mimic_data():
         f"Success! Extracted {len(index_df):,} hourly records across "
         f"{index_df['stay_id'].nunique():,} ICU stays."
     )
-    print("\n--- Stay-level split ---")
+    print("\n--- Patient-level split ---")
     print(split_summary.to_string())
     print(f"\nSaved tensor: {PROCESSED_DIR / 'mimic_tensor.pt'}")
     print(f"Saved trajectory index: {PROCESSED_DIR / 'mimic_index.csv'}")
