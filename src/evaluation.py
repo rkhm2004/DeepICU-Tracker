@@ -1,5 +1,12 @@
 import json
+import sys
 from pathlib import Path
+
+# Allow this file to run both as `python src/evaluation.py` and when imported
+# from the repository root during unit tests.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,7 +15,6 @@ import torch
 
 from src.markov_mgf.ctmc_estimator import estimate_generator
 from src.vae.model import ICU_VAE
-from src.vae.train import vae_loss_function
 
 
 STATE_NAMES = ["Low Risk", "Medium Risk", "High Risk", "Critical"]
@@ -35,7 +41,7 @@ def _evaluate_vae(model, tensor, indices):
             kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
             total_mse += float(mse.item())
             total_kl += float(kl.item())
-            total_loss += float(vae_loss_function(recon, batch, mu, logvar).item())
+            total_loss += float((mse + kl).item())
 
     n = len(tensor)
     return {
