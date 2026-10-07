@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+from scipy.linalg import expm
 
 from src.markov_mgf.ctmc_estimator import estimate_generator
 from src.vae.model import ICU_VAE
@@ -71,6 +72,46 @@ def _first_critical_remaining_hours(stay):
     # Keep the event time at 0, retain only pre-event observations, and
     # exclude post-Critical observations from the prognosis comparison.
     return remaining.where(remaining >= 0, np.nan)
+
+def _empirical_one_step_transition_matrix(df):
+    """Estimate observed one-hour transition probabilities without fitting Q.
+
+    Counts every consecutive hourly state observation within each ICU stay,
+    including self-transitions, and stops each trajectory at its first
+    Critical observation so the empirical test comparison matches the
+    absorbing-Critical CTMC semantics.
+    """
+    counts = np.zeros((4, 4), dtype=float)
+
+    required = {"stay_id", "hour", "state"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {sorted(missing)}")
+
+    data = df.sort_values(["stay_id", "hour"]).copy()
+    for _, stay in data.groupby("stay_id", sort=False):
+        rows = stay[["hour", "state"]].to_numpy()
+        for current, nxt in zip(rows[:-1], rows[1:]):
+            current_hour, current_state = int(current[0]), int(current[1])
+            next_hour, next_state = int(nxt[0]), int(nxt[1])
+
+            if next_hour - current_hour != 1:
+                continue
+            if current_state == 3:
+                break
+
+            counts[current_state, next_state] += 1.0
+
+            if next_state == 3:
+                break
+
+    probabilities = np.zeros_like(counts)
+    row_totals = counts.sum(axis=1)
+    for state in range(4):
+        if row_totals[state] > 0:
+            probabilities[state] = counts[state] / row_totals[state]
+
+    return probabilities, counts
 
 
 def evaluate_pipeline():
@@ -148,6 +189,32 @@ def evaluate_pipeline():
     # Compare the model's state-conditioned prognosis with observed remaining
     # hours to the first Critical state on uncensored test trajectories.
     test_df = evaluation_df[evaluation_df["split"] == "test"].copy()
+    test_transition_probabilities, test_transition_counts = (
+        _empirical_one_step_transition_matrix(test_df)
+    )
+    model_transition_probabilities = expm(Q)
+    transition_errors = np.abs(
+        test_transition_probabilities[:3] - model_transition_probabilities[:3]
+    )
+    transition_validation = {
+        "time_step_hours": 1.0,
+        "test_transition_counts_including_self": test_transition_counts.astype(int).tolist(),
+        "observed_probabilities": test_transition_probabilities.tolist(),
+        "model_probabilities_from_Q": model_transition_probabilities.tolist(),
+        "mean_absolute_error_by_state": {
+            STATE_NAMES[state]: float(np.mean(transition_errors[state]))
+            for state in range(3)
+            if test_transition_counts[state].sum() > 0
+        },
+        "overall_mae_transient_states": float(
+            np.mean(
+                transition_errors[
+                    np.array([test_transition_counts[s].sum() > 0 for s in range(3)])
+                ]
+            )
+        ) if any(test_transition_counts[s].sum() > 0 for s in range(3)) else None,
+        "note": "Held-out test transitions are compared with P(1h)=exp(Q) using only pre-Critical transitions. This is a transition-model diagnostic, not a clinical accuracy metric."
+    }
     remaining_parts = []
     for stay_id, stay in test_df.groupby("stay_id", sort=False):
         remaining = _first_critical_remaining_hours(stay)
@@ -159,8 +226,9 @@ def evaluate_pipeline():
 
     observed_comparison = {}
     means = np.full(3, np.nan)
-    if np.all(np.linalg.det(Q[:3, :3]) != 0):
-        means = -np.linalg.inv(Q[:3, :3]) @ np.ones(3)
+    transient_T = Q[:3, :3]
+    if abs(np.linalg.det(transient_T)) > 1e-12:
+        means = -np.linalg.solve(transient_T, np.ones(3))
     for state in range(3):
         subset = test_observed[(test_observed["state"] == state) & uncensored]
         if len(subset):
@@ -207,11 +275,16 @@ def evaluate_pipeline():
             "exposure_hours": exposure.tolist(),
             "Q": Q.tolist(),
         },
+        "test_transition_validation": transition_validation,
         "test_prognosis_comparison": {
-            "censoring_note": "Only test records from stays that reached the observed Critical state within the 48-hour window are included.",
+            "censoring_note": "Only test records from stays that reached the observed Critical state within the 48-hour window are included. Records after the first Critical event are excluded.",
             "uncensored_records": int(uncensored.sum()),
+            "uncensored_stays": int(
+                test_observed.loc[uncensored, "stay_id"].nunique()
+            ),
             "total_test_records": int(len(test_observed)),
             "comparison_by_state": observed_comparison,
+            "interpretation_note": "This is a descriptive diagnostic on the small uncensored subset; right-censored test stays are not assigned a false time-to-Critical value.",
         },
     }
 
@@ -288,7 +361,7 @@ def evaluate_pipeline():
         plt.xticks(x, labels)
         plt.ylabel("Hours to observed Critical")
         plt.xlabel("Current risk state")
-        plt.title("Predicted vs Observed Time to Critical on Uncensored Test Records")
+        plt.title("Predicted vs Observed Time to Critical (Uncensored Test Diagnostic)")
         plt.legend()
         plt.tight_layout()
         plt.savefig(out_dir / "evaluation_prognosis_comparison.png", dpi=300)
