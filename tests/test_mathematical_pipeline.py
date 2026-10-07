@@ -87,6 +87,25 @@ class TestDataSplitting(unittest.TestCase):
         self.assertTrue(np.isnan(remaining.iloc[2]))
         self.assertTrue(np.isnan(remaining.iloc[3]))
 
+
+    def test_empirical_transition_matrix_includes_self_transitions_and_stops_at_critical(self):
+        from src.evaluation import _empirical_one_step_transition_matrix
+
+        df = pd.DataFrame(
+            {
+                "stay_id": [1, 1, 1, 1, 2, 2],
+                "hour": [0, 1, 2, 3, 0, 1],
+                "state": [0, 0, 3, 1, 1, 2],
+            }
+        )
+        probabilities, counts = _empirical_one_step_transition_matrix(df)
+
+        self.assertEqual(counts[0, 0], 1)
+        self.assertEqual(counts[0, 3], 1)
+        self.assertEqual(counts[1, 2], 1)
+        self.assertEqual(counts[3].sum(), 0)
+        self.assertTrue(np.allclose(probabilities[0], [0.5, 0.0, 0.0, 0.5]))
+
     def test_stay_split_is_reproducible_and_exclusive(self):
         stay_ids = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
         first = assign_stay_splits(stay_ids, seed=42)
