@@ -78,10 +78,14 @@ class TestPhaseType(unittest.TestCase):
 
 
 class TestDataSplitting(unittest.TestCase):
-    def test_first_critical_remaining_time_is_stay_local(self):
-        df = pd.DataFrame({"hour": [0, 1, 2], "state": [0, 3, 2]})
+    def test_first_critical_remaining_time_excludes_post_critical(self):
+        df = pd.DataFrame({"hour": [0, 1, 2, 3], "state": [0, 3, 2, 1]})
         remaining = _first_critical_remaining_hours(df)
-        self.assertEqual(list(remaining), [1.0, 0.0, -1.0])
+
+        self.assertEqual(remaining.iloc[0], 1.0)
+        self.assertEqual(remaining.iloc[1], 0.0)
+        self.assertTrue(np.isnan(remaining.iloc[2]))
+        self.assertTrue(np.isnan(remaining.iloc[3]))
 
     def test_stay_split_is_reproducible_and_exclusive(self):
         stay_ids = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
