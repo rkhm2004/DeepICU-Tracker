@@ -333,10 +333,11 @@ The evaluation module performs the following checks and produces report-ready ou
 - reports VAE total, reconstruction, and KL loss separately for train/validation/test;
 - reports Low/Medium/High/Critical state distributions for each split;
 - recomputes the training-only CTMC transition counts and exposure;
+- validates the training CTMC on held-out test one-hour transition probabilities using (P(1)=exp(Q)), including self-transitions and stopping trajectories at first Critical;
 - compares Phase-Type expected time-to-Critical against observed remaining time on uncensored test trajectories (stays that actually reach Critical inside the 48-hour window);
 - writes `results/evaluation_report.json` and `results/vae_split_metrics.csv`;
 - generates evaluation graphs in `results/`.
 
-The observed prognosis comparison is descriptive only. A test stay that never reaches Critical within the 48-hour observation window is right-censored and is not treated as a zero-time event.
+The held-out transition validation is a model-diagnostic check, not a clinical accuracy metric. The observed prognosis comparison is also descriptive only: a test stay that never reaches Critical within the 48-hour observation window is right-censored and is not treated as a zero-time event, and observations after first Critical are excluded.
 
 Generated artifacts are ignored by Git and should not be committed with patient data.
