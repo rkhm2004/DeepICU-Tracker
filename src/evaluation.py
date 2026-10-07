@@ -55,11 +55,22 @@ def _evaluate_vae(model, tensor, indices):
 
 
 def _first_critical_remaining_hours(stay):
+    """Return hours until first Critical, excluding observations after it.
+
+    A Critical state is treated as the first absorbing event for prognosis
+    evaluation. Records after that event are not valid "time remaining"
+    observations and are therefore marked NaN.
+    """
     critical = stay.loc[stay["state"] == 3, "hour"]
     if critical.empty:
         return pd.Series(np.nan, index=stay.index)
+
     first_critical = float(critical.min())
-    return first_critical - stay["hour"]
+    remaining = first_critical - stay["hour"].astype(float)
+
+    # Keep the event time at 0, retain only pre-event observations, and
+    # exclude post-Critical observations from the prognosis comparison.
+    return remaining.where(remaining >= 0, np.nan)
 
 
 def evaluate_pipeline():
