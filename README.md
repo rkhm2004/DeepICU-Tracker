@@ -1,343 +1,533 @@
-# Team Workflow Guide — ICU Early-Warning Project (4 Members, GitHub)
+# DeepICU-Tracker — Mathematical ICU Early-Warning System
 
-This guide splits the 4-stage pipeline (VAE → CTMC → Phase-Type/MGF → Bayesian Network)
-across 4 team members, with a Git branching strategy, a commit-by-commit breakdown per
-person (10–12 commits each), and exact steps to resolve merge conflicts.
+## 1. Project Overview
 
----
+DeepICU-Tracker is an ICU early-warning and risk-tracking system that converts raw ICU physiological measurements into a compact latent risk representation, interpretable risk states, stochastic state-transition dynamics, and an estimated time-to-Critical state.
 
-## 1. Team Split (1 member = 1 stage = 1 owned module)
+The proposed architecture is:
 
-| Member | Owns | Branch name |
-|---|---|---|
-| Member A | Data extraction + preprocessing (MIMIC-IV) | `feature/data-pipeline` |
-| Member B | Stage 1 — VAE (compressor) | `feature/vae-encoder` |
-| Member C | Stage 2 + 3 — CTMC + Phase-Type/MGF (tracker + countdown) | `feature/markov-mgf` |
-| Member D | Stage 4 — Bayesian Network (explainer) + final dashboard integration | `feature/bayesian-network` |
+Raw ICU Vitals/Labs → Leakage-Safe Preprocessing → VAE → Risk States → CTMC → Phase-Type/MGF → Bayesian Network → Clinical Risk/Explanation Output
 
-Why this split works: each module has a clean input/output contract (e.g., Member B's VAE
-outputs a latent score that Member C's Markov model consumes), so members can work in
-parallel without touching each other's files most of the time — this is what keeps merge
-conflicts rare instead of constant.
+**Current status:** preprocessing, VAE, risk-state mapping, CTMC, Phase-Type/MGF, inference, visualization, and mathematical evaluation are implemented and tested. The **Bayesian Network (BN) is the remaining major architecture component and is intentionally pending.**
 
 ---
 
-## 2. Repository Structure (agree on this BEFORE anyone starts coding)
+## 2. Problem Statement
 
-```
-icu-early-warning/
-├── README.md
-├── requirements.txt
-├── data/
-│   ├── raw/              # raw MIMIC-IV extracts (gitignored — don't commit patient data)
-│   └── processed/        # cleaned, feature-engineered data
-├── src/
-│   ├── data_pipeline/    # Member A
-│   ├── vae/              # Member B
-│   ├── markov_mgf/       # Member C
-│   ├── bayesian_net/     # Member D
-│   └── dashboard/        # Member D (final integration)
-├── notebooks/            # exploration notebooks, one per member, prefixed with name
-├── tests/
-└── docs/
-    └── report/
-```
+ICU patients can move between different levels of physiological risk over time. ICU systems continuously generate measurements such as heart rate, blood pressure, and laboratory values, but raw measurements do not directly provide:
 
-**First commit of the whole project** (whoever creates the repo) should just be this empty
-folder structure + `.gitignore` + `requirements.txt` + `README.md`. Everyone else branches
-off this.
+1. a compact representation of the patient's current physiological condition;
+2. an interpretable risk state;
+3. a mathematical model of how risk changes over time;
+4. the probability of moving between risk states; or
+5. an estimate of the expected time until a Critical state.
+
+Another important challenge is that ICU observations are longitudinal. A patient's ICU stays must not be incorrectly joined together, and information from the same patient must not leak between training and evaluation sets.
+
+The project therefore combines **representation learning with stochastic-process modelling** rather than treating the problem as only a conventional classification task.
 
 ---
 
-## 3. Branching Strategy
+## 3. Proposed Solution
 
-- `main` — always working, never broken. Nobody commits directly to `main`.
-- `develop` (optional but recommended for 4 people) — integration branch where feature
-  branches merge first, before eventually going to `main`.
-- `feature/<name>` — one branch per person per stage (see table above).
+### Stage 1 — Variational Autoencoder (VAE)
 
-Flow: `feature/xyz` → Pull Request → reviewed by 1 teammate → merge into `develop` →
-periodically `develop` → `main` once stable.
+The VAE receives three currently used ICU features:
 
-### Setting up (whoever owns the repo does this once):
-```bash
-git init
-git add .
-git commit -m "Initial project structure"
-git branch develop
-git push -u origin main
-git push -u origin develop
-```
+- Heart Rate
+- Systolic Blood Pressure (SBP)
+- White Blood Cell count (WBC)
 
-### Everyone else, to start working:
-```bash
-git clone <repo-url>
-cd icu-early-warning
-git checkout develop
-git pull origin develop
-git checkout -b feature/vae-encoder      # each person uses their own branch name
-```
+The encoder compresses these measurements into a low-dimensional latent representation. The implementation uses a scalar latent risk score to represent the patient's physiological condition.
 
----
+### Stage 2 — Risk-State Mapping
 
-## 4. Commit Breakdown Per Person (10–12 commits each)
+The continuous latent score is converted into four states:
 
-Keep commits **small and specific** — each commit should be one logical change, not
-"finished everything." This is what naturally gets you to 10–12 commits instead of 1 giant
-one, and it makes code review and conflict resolution much easier.
+| State | Meaning |
+|---|---|
+| 0 | Low Risk |
+| 1 | Medium Risk |
+| 2 | High Risk |
+| 3 | Critical |
 
-### Member A — Data Pipeline
-1. `Add MIMIC-IV data download/setup instructions to README`
-2. `Add script to extract chartevents (vitals) for cohort`
-3. `Add script to extract labevents (labs) for cohort`
-4. `Add script to extract admissions/patient baseline covariates`
-5. `Add script to extract outcome labels (mortality, LOS)`
-6. `Merge vitals+labs into unified per-patient timeseries table`
-7. `Handle missing values and irregular timestamps`
-8. `Add train/validation/test split logic`
-9. `Add data validation checks (unit tests)`
-10. `Add data summary/EDA notebook`
-11. `Refactor extraction scripts into reusable functions`
-12. `Document data schema in docs/`
+The state cutoffs are learned from **training latent scores only**, saved as metadata, and reused during inference.
 
-### Member B — VAE (Stage 1)
-1. `Add VAE model skeleton (encoder/decoder classes)`
-2. `Implement reparameterization trick`
-3. `Implement VAE loss (reconstruction + KL divergence)`
-4. `Add training loop`
-5. `Add normalization/preprocessing for vitals input`
-6. `Train VAE on Member A's processed data, save checkpoint`
-7. `Add latent score extraction function for a given patient`
-8. `Add sigma-based confidence output handling`
-9. `Add unit tests for VAE forward pass`
-10. `Tune hidden layer size / latent dimension`
-11. `Add visualization of latent space`
-12. `Document VAE module usage in docs/`
+### Stage 3 — Continuous-Time Markov Chain (CTMC)
 
-### Member C — CTMC + Phase-Type/MGF (Stages 2 & 3)
-1. `Add state discretization function (Low/Medium/High/Critical cutoffs)`
-2. `Add Q matrix estimation from state sequences (MLE)`
-3. `Add P(t) = expm(Qt) transition probability function`
-4. `Add sub-generator matrix T extraction (drop absorbing state)`
-5. `Implement expected time-to-critical formula (MGF-derived)`
-6. `Add variance-of-time-to-critical calculation`
-7. `Integrate with Member B's VAE output (latent score → state)`
-8. `Add unit tests for Markov/MGF functions`
-9. `Add transition diagram visualization`
-10. `Validate Q estimates against known/simulated ground truth`
-11. `Handle edge cases (patient already in Critical, sparse data)`
-12. `Document Markov/MGF module usage in docs/`
+The sequence of risk states within each ICU stay is modelled as a CTMC.
 
-### Member D — Bayesian Network + Final Integration (Stage 4)
-1. `Add Bayesian Network structure definition (pgmpy)`
-2. `Add CPD estimation from baseline covariates`
-3. `Add inference/query function (VariableElimination)`
-4. `Integrate baseline covariates from Member A's data pipeline`
-5. `Add root-cause explanation output formatting`
-6. `Build combined dashboard function (all 4 stages → 1 output)`
-7. `Add end-to-end pipeline script (data → VAE → Markov → MGF → BN → output)`
-8. `Add integration tests across all modules`
-9. `Add example output for sample patients`
-10. `Fix integration bugs found during merge testing`
-11. `Add final results notebook`
-12. `Write final report/README integration section`
+For transient states, the generator rates are estimated using:
 
-**Note:** commits don't have to be perfectly evenly sized — the point is granularity.
-Small, frequent commits with clear messages make review and conflict resolution far
-easier than a few massive ones.
+q_ij = N_ij / T_i, for i ≠ j
+
+where N_ij is the number of observed transitions from state i to j and T_i is the observed exposure time in state i.
+
+The diagonal is:
+
+q_ii = − Σ(j≠i) q_ij
+
+Critical is explicitly treated as an absorbing state.
+
+### Stage 4 — Phase-Type Distribution / MGF
+
+The transient CTMC generator is used to model the time until absorption into Critical.
+
+For transient generator T:
+
+E[tau] = pi(-T^-1)1
+
+The implementation also provides:
+
+- Phase-Type MGF;
+- expected time-to-Critical;
+- variance;
+- standard deviation.
+
+Thus, the system reports both an expected countdown and uncertainty around that countdown.
+
+### Stage 5 — Bayesian Network — Pending
+
+The planned BN provides the explanatory layer. It will connect static patient/admission factors with the real-time risk state to answer questions such as:
+
+- Which patient factors are associated with the current risk?
+- How do static factors affect risk probabilities?
+- Which factors can provide a useful root-cause explanation?
+
+**No BN results are reported yet because this component has not been implemented.**
 
 ---
 
-## 5. Day-to-Day Workflow (each person, each work session)
+## 4. Complete Architecture
 
-```bash
-# 1. Always start by syncing with develop before you start new work
-git checkout develop
-git pull origin develop
-git checkout feature/vae-encoder
-git merge develop          # bring any new shared changes into your branch
+    DEEPICU-TRACKER
+    ICU EARLY-WARNING SYSTEM
 
-# 2. Do your work, then commit in small chunks
-git add src/vae/model.py
-git commit -m "Implement reparameterization trick"
+    MIMIC-IV ICU Vitals + Labs
+                |
+                v
+    +-----------------------------+
+    | Data Preprocessing          |
+    | Patient-level 70/15/15     |
+    | Train/Validation/Test       |
+    | Train-only imputation       |
+    | Train-only StandardScaler   |
+    | Hourly trajectories          |
+    +--------------+--------------+
+                   |
+                   v
+    +-----------------------------+
+    | VAE                         |
+    | Heart Rate + SBP + WBC     |
+    |       -> latent score       |
+    +--------------+--------------+
+                   |
+                   v
+    +-----------------------------+
+    | Risk-State Mapping          |
+    | Low -> Medium -> High       |
+    |             -> Critical     |
+    +--------------+--------------+
+                   |
+                   v
+    +-----------------------------+
+    | CTMC                        |
+    | Transition counts +         |
+    | exposure -> generator Q    |
+    | Critical = absorbing       |
+    +--------------+--------------+
+                   |
+                   v
+    +-----------------------------+
+    | Phase-Type / MGF            |
+    | transient generator T      |
+    | -> mean + variance + SD     |
+    | -> expected time-to-Critical|
+    +--------------+--------------+
+                   |
+          +--------+---------+
+          |                  |
+          v                  v
+    +-------------+   +----------------------+
+    | Bayesian    |   | Clinical Risk Output |
+    | Network     |   | Current state        |
+    |             |   | Expected time        |
+    | PENDING     |   | Uncertainty / SD     |
+    | Explanation |   | Risk trajectory      |
+    +-------------+   +----------------------+
 
-# 3. Push regularly (don't wait until everything is done)
-git push origin feature/vae-encoder
-```
-
-Push at the end of every work session, even if the feature isn't finished — this is what
-gives you your 10–12 commit history and also means you never lose a day's work.
-
----
-
-## 6. Opening a Pull Request (PR) and Merging
-
-1. Once your stage is working and tested, open a PR: `feature/vae-encoder` → `develop`.
-2. Assign at least 1 teammate to review it — they check the code runs and makes sense,
-   not just skim it.
-3. Fix anything they flag, push again (updates the same PR automatically).
-4. Once approved, merge using **"Squash and merge" or a regular merge** (team's choice —
-   squash gives a cleaner `develop` history, regular merge keeps your 10–12 commits visible
-   in `develop`'s history too, which is nicer for grading/proof-of-contribution).
-
----
-
-## 7. Merge Conflicts — What They Are and Exactly How to Resolve Them
-
-**Why they happen:** two people changed the *same lines* of the *same file* in different
-ways, and Git can't automatically decide which version to keep. This is common on shared
-files like `requirements.txt`, `README.md`, or the final integration script — less common
-on files only one person touches (which is why the module split above minimizes this).
-
-### Step-by-step resolution:
-
-```bash
-# You're on your feature branch, trying to merge in develop's latest changes
-git checkout feature/bayesian-network
-git pull origin develop        # or: git merge develop
-
-# If there's a conflict, Git will tell you:
-# CONFLICT (content): Merge conflict in requirements.txt
-```
-
-Open the conflicted file. Git marks the conflicting section like this:
-
-```
-torch==2.1.0
-```
-
-- Everything between `<<<<<<< HEAD` and `=======` is **your** version.
-- Everything between `=======` and `>>>>>>> develop` is **their** version (from `develop`).
-- You manually edit the file to keep whichever is correct (or both, if they're not
-  actually conflicting in meaning — e.g., two different new dependencies added to the
-  same line region). Delete the `<<<<<<<`, `=======`, `>>>>>>>` marker lines completely.
-
-```bash
-# After manually fixing the file:
-git add requirements.txt
-git commit -m "Resolve merge conflict in requirements.txt"
-git push origin feature/bayesian-network
-```
-
-### A few practical rules that prevent most conflicts:
-- Pull `develop` into your branch **daily**, not just once at the end — small frequent
-  merges have small easy conflicts; merging once after 2 weeks has huge painful ones.
-- Don't all edit `README.md` or `requirements.txt` at the same time without telling each
-  other — these are the most common conflict points precisely because everyone touches
-  them occasionally.
-- If a conflict looks confusing, **talk to the teammate who wrote the other version**
-  before guessing — this is faster and safer than silently picking one side.
-- If you make a mistake mid-resolution and want to bail out entirely:
-  ```bash
-  git merge --abort
-  ```
-  This safely cancels the merge and returns you to before you started.
+The BN and final explanatory integration are the only major architecture stages still pending.
 
 ---
 
-## 8. Final Integration (before submission)
+## 5. Leakage-Safe Experimental Design
 
-1. Once all 4 feature branches are merged into `develop` and tested together, open one
-   final PR: `develop` → `main`.
-2. All 4 members review this final PR together.
-3. Tag a release: `git tag v1.0` / `git push --tags` — useful to point to in your report as
-   "final submitted version."
+The current run contains:
+
+| Split | Patients | ICU Stays | Hourly Records |
+|---|---:|---:|---:|
+| Train | 70 | 95 | 4,560 |
+| Validation | 15 | 23 | 1,104 |
+| Test | 15 | 22 | 1,056 |
+| **Total** | **100** | **140** | **6,720** |
+
+The split is **patient-level**, so all ICU stays belonging to a patient remain in the same split.
+
+The pipeline also enforces:
+
+- fallback imputation statistics fitted on training data only;
+- StandardScaler fitted on training data only;
+- VAE trained on training records;
+- validation used for checkpoint selection and early stopping;
+- test used only for final evaluation;
+- VAE state cutoffs learned from training latent scores only;
+- CTMC estimated from training trajectories only.
+
+The evaluation confirms zero subject overlap between train, validation, and test.
 
 ---
 
-## 9. Proving Individual Contribution (for grading)
+# 6. Results Obtained So Far
 
-- GitHub's **Insights → Contributors** tab shows commit counts per person automatically —
-  this is exactly why hitting 10–12 real, meaningful commits per person (not one dump)
-  matters for fair grading.
-- Make sure everyone commits using their **own GitHub account** (not one person typing for
-  everyone) — check `git config user.name` / `git config user.email` on each person's
-  machine before the first commit.
+## 6.1 Data Processing
+
+The current run successfully extracted **6,720 hourly records across 140 ICU stays and 100 patients**.
+
+- Train: 4,560 records
+- Validation: 1,104 records
+- Test: 1,056 records
+
+No patient appears in more than one split.
 
 ---
 
-## 10. Codex Mathematical Alignment Fixes
+## 6.2 VAE Results
 
-The `codex` branch corrects the implementation details that must be consistent with
-the proposed architecture in the project review:
+The VAE was trained for up to 50 epochs with validation-based early stopping. Training stopped at epoch 40 after the validation loss stopped improving.
 
-1. **Patient-aware trajectories** — `mimic_parser.py` now preserves `stay_id` and
-   hourly position in `mimic_index.csv`. Laboratory observations are assigned to an ICU
-   stay only when their timestamp falls inside that stay.
-2. **Reproducible VAE state mapping** — training saves the exact latent cutoffs in
-   `data/processed/vae_metadata.json`. Positive/high latent values map toward Low Risk
-   and lower values toward Critical, matching the interpretation used in the project
-   review.
-3. **Valid CTMC generator estimation** — `ctmc_estimator.py` estimates
-   `q_ij = N_ij / T_i` from within-stay transitions and exposure time instead of using
-   an unconstrained matrix logarithm of an empirical transition matrix. Critical is
-   explicitly absorbing.
-4. **Phase-Type/MGF consistency** — `mgf_calculator.py` now exposes the Phase-Type MGF,
-   expected absorption time, variance, and standard deviation. This keeps the countdown
-   calculation tied directly to the transient generator `T`.
-5. **Inference consistency** — `inference.py` loads the saved VAE thresholds rather than
-   hard-coding a second set of thresholds, and reports both mean time-to-Critical and its
-   Phase-Type standard deviation.
-6. **Plot consistency** — `plot.py` uses the actual computed countdown values and saved
-   VAE thresholds; no hand-entered prognosis numbers remain.
-7. **Regression tests** — `tests/test_mathematical_pipeline.py` checks that patient
-   trajectories do not leak into one another, `P(t)=exp(Qt)` is stochastic, and the
-   Phase-Type MGF/moments satisfy basic mathematical sanity checks.
-8. **Leakage-safe ML evaluation** — the parser assigns subjects (and therefore all of
-   their ICU stays) to train/validation/test before model fitting. Training-only medians
-   and StandardScaler statistics are saved in `preprocessing.json`; the VAE trains on
-   train records, selects its checkpoint using validation loss, reports untouched test
-   loss, and learns latent-state cutoffs from the training split only. CTMC estimation
-   also uses the training trajectories only, while inference can score all saved records.
+| Split | Loss / Record | Reconstruction MSE | KL |
+|---|---:|---:|---:|
+| Train | 2.5913 | 2.0584 | 0.5329 |
+| Validation | 5.1269 | 2.4282 | 2.6987 |
+| Test | 5.3843 | 4.2800 | 1.1043 |
 
-### Current execution order
+Training-derived latent cutoffs:
 
-Run these commands from the repository root after activating the virtual environment:
+    [-0.3169, 0.0126, 0.4792]
 
-```powershell
-python -m unittest tests/test_mathematical_pipeline.py
-python src/data_pipeline/mimic_parser.py
-python src/vae/train.py
-python src/markov_mgf/ctmc_estimator.py
-python src/markov_mgf/mgf_calculator.py
-python src/inference.py
-python src/plot.py
-python src/evaluation.py
-```
+These produce the four reproducible states Low, Medium, High, and Critical.
 
-The parser creates a deterministic patient-level 70/15/15 train/validation/test split.
-It fits imputation fallback medians and StandardScaler parameters on the training
-subjects only. The VAE uses the training split for optimization, validation loss for
-checkpoint selection/early stopping, and the test split only for final evaluation.
-The CTMC is estimated from training trajectories only. Re-run the parser whenever you
-change the split/preprocessing code so all downstream artifacts are regenerated.
+---
 
-The Bayesian Network remains intentionally pending. Its planned role is still Stage 4:
-connect static patient/admission priors with the real-time VAE/Markov risk state to provide
-the causal/root-cause explanation described by the project architecture.
+## 6.3 Risk-State Distribution
 
+Training is approximately balanced because the state cutoffs are derived from the training latent distribution.
 
-## 11. Evaluation and leakage verification
+### Validation
 
-After the complete pipeline has run, execute:
+| State | Percentage |
+|---|---:|
+| Low Risk | 38.95% |
+| Medium Risk | 36.32% |
+| High Risk | 8.70% |
+| Critical | 16.03% |
 
-```powershell
-python src/evaluation.py
-```
+### Test
 
-The evaluation module performs the following checks and produces report-ready outputs:
+| State | Percentage |
+|---|---:|
+| Low Risk | 42.33% |
+| Medium Risk | 17.71% |
+| High Risk | 9.19% |
+| Critical | 30.78% |
 
-- verifies that no patient appears in more than one train/validation/test split;
-- verifies that preprocessing metadata reports train-only fitting;
-- verifies that VAE state cutoffs were fitted on the training split;
-- reports VAE total, reconstruction, and KL loss separately for train/validation/test;
-- reports Low/Medium/High/Critical state distributions for each split;
-- recomputes the training-only CTMC transition counts and exposure;
-- validates the training CTMC on held-out test one-hour transition probabilities using (P(1)=exp(Q)), including self-transitions and stopping trajectories at first Critical;
-- compares Phase-Type expected time-to-Critical against observed remaining time on uncensored test trajectories (stays that actually reach Critical inside the 48-hour window);
-- writes `results/evaluation_report.json` and `results/vae_split_metrics.csv`;
-- generates evaluation graphs in `results/`.
+These are observed distributions and are not themselves clinical performance measures.
 
-The held-out transition validation is a model-diagnostic check, not a clinical accuracy metric. The observed prognosis comparison is also descriptive only: a test stay that never reaches Critical within the 48-hour observation window is right-censored and is not treated as a zero-time event, and observations after first Critical are excluded.
+---
 
-Generated artifacts are ignored by Git and should not be committed with patient data.
+## 6.4 CTMC Results
+
+The CTMC was fitted using the **training split only**.
+
+Estimated generator Q, in rates/hour:
+
+    [[-0.096529,  0.082430,  0.013015,  0.001085],
+     [ 0.120930, -0.231008,  0.099225,  0.010853],
+     [ 0.020349,  0.171512, -0.270349,  0.078488],
+     [ 0.000000,  0.000000,  0.000000,  0.000000]]
+
+Critical is absorbing.
+
+Training transition counts:
+
+    [[ 0, 76, 12,  1],
+     [78,  0, 64,  7],
+     [ 7, 59,  0, 27],
+     [ 0,  0,  0,  0]]
+
+Training exposure:
+
+| State | Exposure |
+|---|---:|
+| Low Risk | 922 h |
+| Medium Risk | 645 h |
+| High Risk | 344 h |
+| Critical | Absorbing |
+
+The estimated Q satisfies the CTMC requirements: non-negative off-diagonal rates, zero row sums, and an absorbing Critical state.
+
+---
+
+## 6.5 Held-Out CTMC Validation
+
+The trained CTMC is evaluated on the unseen test set using the one-hour transition matrix:
+
+    P(1) = exp(Q)
+
+### Observed vs modelled probabilities
+
+**Low Risk**
+
+Observed: [0.9061, 0.0856, 0.0083, 0.0000]
+
+Model: [0.9125, 0.0713, 0.0143, 0.0020]
+
+**Medium Risk**
+
+Observed: [0.2832, 0.5841, 0.1327, 0.0000]
+
+Model: [0.1040, 0.8046, 0.0782, 0.0131]
+
+**High Risk**
+
+Observed: [0.0526, 0.2982, 0.6140, 0.0351]
+
+Model: [0.0256, 0.1348, 0.7699, 0.0698]
+
+### Mean Absolute Error
+
+| Current State | MAE |
+|---|---:|
+| Low Risk | 0.0072 |
+| Medium Risk | 0.1168 |
+| High Risk | 0.0953 |
+| **Overall transient-state MAE** | **0.0731** |
+
+This is a **transition-model diagnostic**, not a clinical accuracy metric.
+
+The low-risk transitions match particularly closely. Medium- and high-risk transitions show larger discrepancies, which is useful information for future refinement.
+
+---
+
+## 6.6 Phase-Type / MGF Results
+
+Expected remaining time until Critical:
+
+| Current State | Expected Time | SD |
+|---|---:|---:|
+| Low Risk | 67.99 h | 62.48 h |
+| Medium Risk | 60.08 h | 61.84 h |
+| High Risk | 46.93 h | 59.18 h |
+| Critical | 0 h | 0 h |
+
+The model therefore gives the intended ordering:
+
+    Low Risk       ≈ 67.99 h
+    Medium Risk    ≈ 60.08 h
+    High Risk      ≈ 46.93 h
+    Critical       = 0 h
+
+The standard deviation is large, so the output should be interpreted as an expected time with substantial uncertainty rather than a precise countdown.
+
+---
+
+## 6.7 Prognosis Diagnostic on Test Data
+
+A descriptive comparison was performed between predicted Phase-Type time-to-Critical and observed remaining time to the first Critical state.
+
+Only test stays that actually reached Critical within the 48-hour observation window were usable.
+
+- Usable records: **26**
+- Usable ICU stays: **11**
+
+| State | Records | Predicted Mean | Observed Mean Remaining | MAE |
+|---|---:|---:|---:|---:|
+| Low Risk | 0 | 67.99 h | — | — |
+| Medium Risk | 1 | 60.08 h | 4.00 h | 56.08 h |
+| High Risk | 14 | 46.93 h | 5.14 h | 41.79 h |
+
+These values **must not be presented as clinical prediction accuracy**. The usable sample is small, and stays that never reach Critical during the 48-hour observation window are right-censored.
+
+Therefore this is currently a **descriptive diagnostic**, not a validated clinical performance metric.
+
+---
+
+## 6.8 Inference
+
+The inference pipeline successfully generates:
+
+    results/inference_results.csv
+
+Each record includes the latent score, risk state, expected time-to-Critical, and Phase-Type standard deviation.
+
+Example from the current run:
+
+    -0.1278 -> High Risk -> 46.93 h
+    -0.1717 -> High Risk -> 46.93 h
+    -0.3601 -> Critical  -> 0 h
+
+Inference uses the same saved training-derived state cutoffs used by the VAE stage.
+
+---
+
+## 7. Validation and Testing
+
+The automated tests and evaluation pipeline currently check:
+
+- patient/stay boundaries are respected;
+- CTMC matrices are mathematically valid;
+- P(t)=exp(Qt) behaves as a stochastic transition matrix;
+- the Phase-Type MGF satisfies M(0)=1;
+- Phase-Type moments are positive where expected;
+- post-Critical records are excluded from remaining-time calculations;
+- empirical transition validation includes self-transitions;
+- split behaviour is reproducible;
+- no patient appears in multiple train/validation/test splits;
+- preprocessing metadata confirms train-only fitting;
+- VAE cutoffs confirm train-only fitting;
+- CTMC estimation uses training trajectories only.
+
+Run the full evaluation with:
+
+    python src/evaluation.py
+
+It generates:
+
+- results/evaluation_report.json
+- results/vae_split_metrics.csv
+- evaluation graphs
+
+---
+
+## 8. Current Project Status
+
+| Component | Status |
+|---|---|
+| MIMIC-IV preprocessing | Complete |
+| Patient-level data split | Complete |
+| Leakage-safe imputation/scaling | Complete |
+| VAE | Complete |
+| Latent risk score | Complete |
+| Low/Medium/High/Critical mapping | Complete |
+| CTMC estimation | Complete |
+| Absorbing Critical state | Complete |
+| Phase-Type MGF | Complete |
+| Expected time-to-Critical | Complete |
+| Variance / Standard deviation | Complete |
+| Inference pipeline | Complete |
+| Visualizations | Complete |
+| Mathematical regression tests | Complete |
+| Held-out CTMC validation | Complete |
+| Prognosis diagnostic | Complete |
+| **Bayesian Network** | **Pending** |
+| **Final explanatory/dashboard integration** | **Pending BN** |
+
+---
+
+## 9. Next Stage — Bayesian Network
+
+The next major implementation step is the BN.
+
+Planned structure:
+
+    Static Patient / Admission Factors
+                    |
+                    v
+             Bayesian Network
+                    |
+                    +------> Risk-related probabilities
+                    |
+    VAE Risk State --+
+                    |
+                    v
+             Explanation Layer
+                    |
+                    v
+           Final Clinical Output
+
+The BN should add an explanatory layer on top of the already working mathematical risk-tracking pipeline.
+
+Until it is implemented and evaluated, the project should not claim that the complete VAE → CTMC → Phase-Type → BN architecture is finished.
+
+---
+
+## 10. Running the Current Pipeline
+
+From the repository root:
+
+    python -m unittest tests/test_mathematical_pipeline.py
+    python src/data_pipeline/mimic_parser.py
+    python src/vae/train.py
+    python src/markov_mgf/ctmc_estimator.py
+    python src/markov_mgf/mgf_calculator.py
+    python src/inference.py
+    python src/plot.py
+    python src/evaluation.py
+
+Generated patient-derived data and model artifacts are ignored by Git through .gitignore.
+
+---
+
+## 11. Repository Structure
+
+    DeepICU-Tracker/
+    ├── README.md
+    ├── requirements.txt
+    ├── .gitignore
+    ├── data/
+    │   ├── raw/
+    │   └── processed/
+    ├── src/
+    │   ├── data_pipeline/
+    │   │   └── mimic_parser.py
+    │   ├── vae/
+    │   │   ├── model.py
+    │   │   └── train.py
+    │   ├── markov_mgf/
+    │   │   ├── ctmc_estimator.py
+    │   │   └── mgf_calculator.py
+    │   ├── evaluation.py
+    │   ├── inference.py
+    │   └── plot.py
+    └── tests/
+        └── test_mathematical_pipeline.py
+
+The Bayesian Network is intentionally not represented as a completed module yet.
+
+---
+
+## 12. Final Summary
+
+The mathematical core of the proposed ICU early-warning system is currently operational:
+
+    ICU measurements
+          ↓
+    Leakage-safe preprocessing
+          ↓
+    VAE latent physiological representation
+          ↓
+    Four interpretable risk states
+          ↓
+    Training-only CTMC estimation
+          ↓
+    Phase-Type / MGF time-to-Critical model
+          ↓
+    Expected time + uncertainty
+          ↓
+    Held-out mathematical validation
+          ↓
+    Bayesian Network — NEXT STAGE
+
+The current implementation has a working and evaluated **VAE → Risk State → CTMC → Phase-Type/MGF** pipeline.
+
+The remaining major task is the **Bayesian Network**, which will provide the planned explanatory/root-cause layer and complete the proposed architecture once it is implemented and evaluated.
