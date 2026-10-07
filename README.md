@@ -253,3 +253,91 @@ git push origin feature/bayesian-network
 - Make sure everyone commits using their **own GitHub account** (not one person typing for
   everyone) — check `git config user.name` / `git config user.email` on each person's
   machine before the first commit.
+
+---
+
+## 10. Codex Mathematical Alignment Fixes
+
+The `codex` branch corrects the implementation details that must be consistent with
+the proposed architecture in the project review:
+
+1. **Patient-aware trajectories** — `mimic_parser.py` now preserves `stay_id` and
+   hourly position in `mimic_index.csv`. Laboratory observations are assigned to an ICU
+   stay only when their timestamp falls inside that stay.
+2. **Reproducible VAE state mapping** — training saves the exact latent cutoffs in
+   `data/processed/vae_metadata.json`. Positive/high latent values map toward Low Risk
+   and lower values toward Critical, matching the interpretation used in the project
+   review.
+3. **Valid CTMC generator estimation** — `ctmc_estimator.py` estimates
+   `q_ij = N_ij / T_i` from within-stay transitions and exposure time instead of using
+   an unconstrained matrix logarithm of an empirical transition matrix. Critical is
+   explicitly absorbing.
+4. **Phase-Type/MGF consistency** — `mgf_calculator.py` now exposes the Phase-Type MGF,
+   expected absorption time, variance, and standard deviation. This keeps the countdown
+   calculation tied directly to the transient generator `T`.
+5. **Inference consistency** — `inference.py` loads the saved VAE thresholds rather than
+   hard-coding a second set of thresholds, and reports both mean time-to-Critical and its
+   Phase-Type standard deviation.
+6. **Plot consistency** — `plot.py` uses the actual computed countdown values and saved
+   VAE thresholds; no hand-entered prognosis numbers remain.
+7. **Regression tests** — `tests/test_mathematical_pipeline.py` checks that patient
+   trajectories do not leak into one another, `P(t)=exp(Qt)` is stochastic, and the
+   Phase-Type MGF/moments satisfy basic mathematical sanity checks.
+8. **Leakage-safe ML evaluation** — the parser assigns subjects (and therefore all of
+   their ICU stays) to train/validation/test before model fitting. Training-only medians
+   and StandardScaler statistics are saved in `preprocessing.json`; the VAE trains on
+   train records, selects its checkpoint using validation loss, reports untouched test
+   loss, and learns latent-state cutoffs from the training split only. CTMC estimation
+   also uses the training trajectories only, while inference can score all saved records.
+
+### Current execution order
+
+Run these commands from the repository root after activating the virtual environment:
+
+```powershell
+python -m unittest tests/test_mathematical_pipeline.py
+python src/data_pipeline/mimic_parser.py
+python src/vae/train.py
+python src/markov_mgf/ctmc_estimator.py
+python src/markov_mgf/mgf_calculator.py
+python src/inference.py
+python src/plot.py
+python src/evaluation.py
+```
+
+The parser creates a deterministic patient-level 70/15/15 train/validation/test split.
+It fits imputation fallback medians and StandardScaler parameters on the training
+subjects only. The VAE uses the training split for optimization, validation loss for
+checkpoint selection/early stopping, and the test split only for final evaluation.
+The CTMC is estimated from training trajectories only. Re-run the parser whenever you
+change the split/preprocessing code so all downstream artifacts are regenerated.
+
+The Bayesian Network remains intentionally pending. Its planned role is still Stage 4:
+connect static patient/admission priors with the real-time VAE/Markov risk state to provide
+the causal/root-cause explanation described by the project architecture.
+
+
+## 11. Evaluation and leakage verification
+
+After the complete pipeline has run, execute:
+
+```powershell
+python src/evaluation.py
+```
+
+The evaluation module performs the following checks and produces report-ready outputs:
+
+- verifies that no patient appears in more than one train/validation/test split;
+- verifies that preprocessing metadata reports train-only fitting;
+- verifies that VAE state cutoffs were fitted on the training split;
+- reports VAE total, reconstruction, and KL loss separately for train/validation/test;
+- reports Low/Medium/High/Critical state distributions for each split;
+- recomputes the training-only CTMC transition counts and exposure;
+- validates the training CTMC on held-out test one-hour transition probabilities using (P(1)=exp(Q)), including self-transitions and stopping trajectories at first Critical;
+- compares Phase-Type expected time-to-Critical against observed remaining time on uncensored test trajectories (stays that actually reach Critical inside the 48-hour window);
+- writes `results/evaluation_report.json` and `results/vae_split_metrics.csv`;
+- generates evaluation graphs in `results/`.
+
+The held-out transition validation is a model-diagnostic check, not a clinical accuracy metric. The observed prognosis comparison is also descriptive only: a test stay that never reaches Critical within the 48-hour observation window is right-censored and is not treated as a zero-time event, and observations after first Critical are excluded.
+
+Generated artifacts are ignored by Git and should not be committed with patient data.
