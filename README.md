@@ -429,35 +429,31 @@ It generates:
 | Mathematical regression tests | Complete |
 | Held-out CTMC validation | Complete |
 | Prognosis diagnostic | Complete |
-| **Bayesian Network** | **Pending** |
-| **Final explanatory/dashboard integration** | **Pending BN** |
+| **Bayesian Network (discrete CPT model)** | **Implemented — proof of concept** |
+| **Static demographic/admission priors** | **Not available in current feature set** |
+| **Final explanatory/dashboard integration** | **BN prediction CSV available; dashboard integration pending** |
 
 ---
 
-## 9. Next Stage — Bayesian Network
+## 9. Bayesian Network — Current Implementation
 
-The next major implementation step is the BN.
+A first discrete Bayesian Network implementation is available at `src/bayesian_net/train_infer.py`.
 
-Planned structure:
+Current structure:
 
-    Static Patient / Admission Factors
-                    |
-                    v
-             Bayesian Network
-                    |
-                    +------> Risk-related probabilities
-                    |
-    VAE Risk State --+
-                    |
-                    v
-             Explanation Layer
-                    |
-                    v
-           Final Clinical Output
+    HeartRateLevel ─┐
+    SBPLevel       ─┼──> RiskState
+    WBCLevel       ─┘
 
-The BN should add an explanatory layer on top of the already working mathematical risk-tracking pipeline.
+Each continuous physiological feature is discretized into Low / Moderate / High levels. The tertile cutoffs are fitted on training records only. A smoothed conditional probability table (CPT) estimates `P(RiskState | HeartRateLevel, SBPLevel, WBCLevel)`, using Laplace smoothing to avoid zero probabilities. The trained CPT is then evaluated on the held-out test split.
 
-Until it is implemented and evaluated, the project should not claim that the complete VAE → CTMC → Phase-Type → BN architecture is finished.
+The script produces:
+
+- `results/bn_predictions.csv` — per-record risk-state probabilities, predicted state, confidence, and a readable feature-bin profile;
+- `results/bn_evaluation.json` — held-out agreement with VAE-derived risk labels and evaluation notes;
+- `data/processed/bn_model.json` — training cutoffs and learned CPT.
+
+**Important limitation:** this BN currently explains/reproduces the VAE-derived risk-state labels from the available physiological inputs. Its test score measures agreement with those labels, **not clinical outcome accuracy**. Static demographic/admission priors are not currently present in the processed feature set, so they are not claimed to be part of this first BN version. The explanatory/dashboard integration can be expanded once appropriate prior variables and validation targets are available.
 
 ---
 
@@ -473,8 +469,10 @@ From the repository root:
     python src/inference.py
     python src/plot.py
     python src/evaluation.py
+    python -m unittest tests/test_bayesian_network.py
+    python src/bayesian_net/train_infer.py
 
-Generated patient-derived data and model artifacts are ignored by Git through .gitignore.
+Run the BN after parser + VAE training, because it consumes `mimic_index.csv` and `latent_states.csv`. Generated patient-derived data and model artifacts are ignored by Git through .gitignore.
 
 ---
 
@@ -496,13 +494,14 @@ Generated patient-derived data and model artifacts are ignored by Git through .g
     │   ├── markov_mgf/
     │   │   ├── ctmc_estimator.py
     │   │   └── mgf_calculator.py
+    │   ├── bayesian_net/
+    │   │   └── train_infer.py
     │   ├── evaluation.py
     │   ├── inference.py
     │   └── plot.py
     └── tests/
-        └── test_mathematical_pipeline.py
-
-The Bayesian Network is intentionally not represented as a completed module yet.
+        ├── test_mathematical_pipeline.py
+        └── test_bayesian_network.py
 
 ---
 
@@ -526,8 +525,7 @@ The mathematical core of the proposed ICU early-warning system is currently oper
           ↓
     Held-out mathematical validation
           ↓
-    Bayesian Network — NEXT STAGE
+    Discrete Bayesian Network
+    (physiological feature bins -> risk probabilities)
 
-The current implementation has a working and evaluated **VAE → Risk State → CTMC → Phase-Type/MGF** pipeline.
-
-The remaining major task is the **Bayesian Network**, which will provide the planned explanatory/root-cause layer and complete the proposed architecture once it is implemented and evaluated.
+The current implementation has a working **VAE → Risk State → CTMC → Phase-Type/MGF** pipeline and a first **discrete Bayesian Network proof of concept**. Further work is still needed to incorporate static patient/admission priors and validate against independent clinical outcomes before claiming clinical explanations or a fully validated clinical early-warning system.
