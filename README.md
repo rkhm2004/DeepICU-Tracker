@@ -8,7 +8,7 @@ The proposed architecture is:
 
 Raw ICU Vitals/Labs → Leakage-Safe Preprocessing → VAE → Risk States → CTMC → Phase-Type/MGF → Bayesian Network → Clinical Risk/Explanation Output
 
-**Current status:** preprocessing, VAE, risk-state mapping, CTMC, Phase-Type/MGF, inference, visualization, and mathematical evaluation are implemented and tested. The **Bayesian Network (BN) is the remaining major architecture component and is intentionally pending.**
+**Current status:** preprocessing, VAE, risk-state mapping, CTMC, Phase-Type/MGF, inference, visualization, mathematical evaluation, and a first discrete Bayesian Network proof of concept are implemented. The BN currently models risk-state probabilities from the three physiological features; static patient priors and clinical-outcome validation remain future work.
 
 ---
 
@@ -156,7 +156,7 @@ The planned BN provides the explanatory layer. It will connect static patient/ad
     | Explanation |   | Risk trajectory      |
     +-------------+   +----------------------+
 
-The BN and final explanatory integration are the only major architecture stages still pending.
+The BN proof of concept is implemented. Broader integration with static patient/admission priors and a final dashboard remains future work.
 
 ---
 
