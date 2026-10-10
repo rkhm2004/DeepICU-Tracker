@@ -112,6 +112,7 @@ def main():
                     "risk_score_mu": round(risk_score, 6),
                     "markov_state": state,
                     "state_name": STATE_NAMES[state],
+                    "state_interpretation": "Model-defined VAE latent bin; not a clinically validated severity category.",
                     "hours_to_critical_mean": round(countdown_mean, 4),
                     "hours_to_critical_sd": round(countdown_std, 4),
                     "prognosis_interpretation": (
