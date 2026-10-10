@@ -256,11 +256,11 @@ python audit_pipeline.py
 - data/processed/data_quality_report.json — raw missingness, feature ranges and review flags.
 - data/processed/latent_states.csv — VAE latent scores and model-defined states.
 - data/processed/q_matrix.npy — estimated CTMC generator.
-- results/inference_results.csv — per-hour state and model-based expected absorption time.
+- results/inference_results.csv — per-hour state, model-based expected absorption time and missing-input quality flags.
 - results/evaluation_report.json — split integrity, VAE metrics, CTMC diagnostics and descriptive prognosis evaluation.
 - results/bn_predictions.csv — held-out BN probabilities and explanations.
 - results/bn_evaluation.json — confusion matrix and agreement metrics against VAE labels.
 
 ## 10. Final Note
 
-DeepICU-Tracker is a mathematical/software research prototype. It is not certified, clinically validated or intended for bedside decisions. Its current contribution is a reproducible pipeline with leakage-aware preprocessing, stochastic-process modelling, numerical checks and transparent surrogate-label evaluation. Independent clinical outcome validation remains future work.
+DeepICU-Tracker is a mathematical/software research prototype. It is not certified and is not clinically validated or intended for bedside decisions. Its current contribution is a reproducible pipeline with leakage-aware preprocessing, stochastic-process modelling, numerical checks and transparent surrogate-label evaluation. Independent clinical outcome validation remains future work.
