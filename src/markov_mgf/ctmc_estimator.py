@@ -28,11 +28,21 @@ def estimate_generator(df, dt_hours=DEFAULT_DT_HOURS):
     if missing:
         raise ValueError(f"Missing required columns: {sorted(missing)}")
 
+    if not np.isfinite(float(dt_hours)) or float(dt_hours) <= 0:
+        raise ValueError("dt_hours must be a finite positive number.")
+
     data = df.sort_values(["stay_id", "hour"]).reset_index(drop=True).copy()
-    data["state"] = data["state"].astype(int)
+    if data.duplicated(["stay_id", "hour"]).any():
+        raise ValueError("Duplicate stay_id/hour observations cannot define a CTMC trajectory.")
+    numeric_states = pd.to_numeric(data["state"], errors="coerce")
+    if numeric_states.isna().any() or not np.equal(numeric_states, np.floor(numeric_states)).all():
+        raise ValueError("State values must be finite integers in [0, 3].")
+    data["state"] = numeric_states.astype(int)
 
     if not data["state"].between(0, NUM_STATES - 1).all():
         raise ValueError("State values must be integers in [0, 3].")
+    if not np.isfinite(pd.to_numeric(data["hour"], errors="coerce")).all():
+        raise ValueError("Hour values must be finite numeric values.")
 
     transition_counts = np.zeros((NUM_STATES, NUM_STATES), dtype=float)
     exposure_hours = np.zeros(NUM_STATES, dtype=float)
