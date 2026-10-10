@@ -5,9 +5,11 @@ import pandas as pd
 
 from src.bayesian_net.train_infer import (
     apply_discretization,
+    compute_classification_metrics,
     fit_bayesian_network,
     fit_discretization,
     infer_risk_probabilities,
+    merge_bn_inputs,
 )
 
 
@@ -39,6 +41,54 @@ class TestBayesianNetwork(unittest.TestCase):
         probs, _ = infer_risk_probabilities(self.train, self.cutoffs, cpt)
         self.assertEqual(probs.shape, (len(self.train), 4))
         self.assertTrue(np.allclose(probs.sum(axis=1), 1.0))
+
+    def test_classification_metrics_include_all_states(self):
+        y_true = np.array([0, 1, 2, 3, 3])
+        y_pred = np.array([0, 1, 1, 2, 3])
+        metrics = compute_classification_metrics(y_true, y_pred)
+        self.assertEqual(np.asarray(metrics["confusion_matrix"]).shape, (4, 4))
+        self.assertAlmostEqual(metrics["accuracy"], 0.6)
+        self.assertIn("Critical", metrics["per_class_recall"])
+        self.assertGreaterEqual(metrics["macro_f1"], 0.0)
+        self.assertGreaterEqual(metrics["balanced_accuracy"], 0.0)
+        self.assertIn("VAE-derived", metrics["metric_target"])
+
+    def test_input_alignment_uses_keys_not_row_order(self):
+        latent = pd.DataFrame({
+            "subject_id": [1, 1, 2, 2],
+            "stay_id": [11, 11, 22, 22],
+            "hour": [0, 1, 0, 1],
+            "split": ["train"] * 4,
+            "state": [0, 1, 2, 3],
+            "state_name": ["Low Risk", "Medium Risk", "High Risk", "Critical"],
+        })
+        index = latent[["subject_id", "stay_id", "hour", "split"]].copy()
+        index["heart_rate"] = [60.0, 70.0, 80.0, 90.0]
+        index["sbp"] = [130.0, 120.0, 110.0, 100.0]
+        index["wbc"] = [5.0, 6.0, 7.0, 8.0]
+        merged = merge_bn_inputs(latent, index.iloc[::-1].reset_index(drop=True))
+        self.assertEqual(merged["heart_rate"].tolist(), [60.0, 70.0, 80.0, 90.0])
+
+    def test_input_alignment_rejects_duplicate_keys(self):
+        latent = pd.DataFrame({
+            "subject_id": [1, 1],
+            "stay_id": [11, 11],
+            "hour": [0, 0],
+            "split": ["train", "train"],
+            "state": [0, 0],
+            "state_name": ["Low Risk", "Low Risk"],
+        })
+        index = pd.DataFrame({
+            "subject_id": [1],
+            "stay_id": [11],
+            "hour": [0],
+            "split": ["train"],
+            "heart_rate": [70.0],
+            "sbp": [120.0],
+            "wbc": [8.0],
+        })
+        with self.assertRaises(ValueError):
+            merge_bn_inputs(latent, index)
 
 
 if __name__ == "__main__":
