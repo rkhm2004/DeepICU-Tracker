@@ -33,7 +33,8 @@ def fit_discretization(train_df, features=FEATURES):
     """Fit tertile cut points on training records only."""
     cutoffs = {}
     for feature in features:
-        values = pd.to_numeric(train_df[feature], errors="coerce").dropna().to_numpy()
+        values = pd.to_numeric(train_df[feature], errors="coerce").to_numpy(dtype=float)
+        values = values[np.isfinite(values)]
         if values.size == 0:
             raise ValueError(f"No training values available for {feature}.")
         q1, q2 = np.quantile(values, [1 / 3, 2 / 3])
@@ -49,8 +50,8 @@ def apply_discretization(df, cutoffs, features=FEATURES):
         if feature not in df:
             raise ValueError(f"Missing feature column: {feature}")
         values = pd.to_numeric(df[feature], errors="coerce").to_numpy(dtype=float)
-        if np.isnan(values).any():
-            raise ValueError(f"Missing values found in feature {feature}.")
+        if not np.isfinite(values).all():
+            raise ValueError(f"Missing or non-finite values found in feature {feature}.")
         result[feature] = np.digitize(values, np.asarray(cutoffs[feature]), right=False)
     return result
 
@@ -62,6 +63,8 @@ def fit_bayesian_network(train_df, cutoffs, alpha=ALPHA):
     if missing:
         raise ValueError(f"Missing columns required to fit BN: {sorted(missing)}")
 
+    if not np.isfinite(float(alpha)) or float(alpha) <= 0:
+        raise ValueError("Laplace smoothing alpha must be finite and positive.")
     bins = apply_discretization(train_df, cutoffs)
     states = train_df["state"].astype(int).to_numpy()
     if not np.isin(states, np.arange(NUM_STATES)).all():
