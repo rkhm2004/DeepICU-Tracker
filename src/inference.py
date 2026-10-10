@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from scipy.linalg import inv
+from src.markov_mgf.mgf_calculator import load_transient_generator, phase_type_moments
 
 sys.path.insert(0, os.path.abspath("src/vae"))
 from model import ICU_VAE
@@ -26,26 +26,16 @@ def latent_to_state(risk_score, cutoffs):
 
 
 def load_phase_type_summary(q_path="data/processed/q_matrix.npy"):
-    Q = np.asarray(np.load(q_path), dtype=float)
-    if Q.shape != (4, 4) or not np.allclose(Q.sum(axis=1), 0.0, atol=1e-10):
-        raise ValueError("q_matrix.npy is not a valid 4-state CTMC generator.")
-    if not np.allclose(Q[3], 0.0, atol=1e-10):
-        raise ValueError("Critical state must be absorbing.")
-
-    T = Q[:3, :3]
-    ones = np.ones(3)
-    T_inv = inv(T)
-    means = -T_inv @ ones
-    second_moments = 2.0 * (T_inv @ T_inv) @ ones
-    variances = np.maximum(second_moments - means**2, 0.0)
-    stds = np.sqrt(variances)
+    Q, T = load_transient_generator(q_path)
+    means, _, stds = phase_type_moments(T)
     return Q, means, stds
 
 
 def main():
     print("=========================================")
-    print("   DEEP-ICU EARLY WARNING SYSTEM LIVE    ")
-    print("=========================================\n")
+    print("   DEEP-ICU RESEARCH PROTOTYPE           ")
+    print("=========================================")
+    print("Research estimates only — not validated for clinical decision-making.\n")
 
     tensor_path = Path("data/processed/mimic_tensor.pt")
     index_path = Path("data/processed/mimic_index.csv")
@@ -99,6 +89,7 @@ def main():
             rows.append(
                 {
                     "record_id": i + 1,
+                    "subject_id": int(meta["subject_id"]),
                     "stay_id": int(meta["stay_id"]),
                     "hour": int(meta["hour"]),
                     "heart_rate": float(meta["heart_rate"]),
@@ -109,6 +100,11 @@ def main():
                     "state_name": STATE_NAMES[state],
                     "hours_to_critical_mean": round(countdown_mean, 4),
                     "hours_to_critical_sd": round(countdown_std, 4),
+                    "prognosis_interpretation": (
+                        "Critical state: model absorption time is set to zero."
+                        if state == 3
+                        else "Expected absorption time under fitted CTMC assumptions; not an individual countdown or clinical prediction."
+                    ),
                 }
             )
 
@@ -119,7 +115,7 @@ def main():
 
     print("\n--- CTMC Q Matrix ---")
     print(np.round(Q, 6))
-    print("\n--- Example predictions ---")
+    print("\n--- Example model-defined states and expected times (not individual countdowns) ---")
     print(
         results[
             [
