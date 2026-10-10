@@ -41,8 +41,13 @@ def estimate_generator(df, dt_hours=DEFAULT_DT_HOURS):
 
     if not data["state"].between(0, NUM_STATES - 1).all():
         raise ValueError("State values must be integers in [0, 3].")
-    if not np.isfinite(pd.to_numeric(data["hour"], errors="coerce")).all():
-        raise ValueError("Hour values must be finite numeric values.")
+    numeric_hours = pd.to_numeric(data["hour"], errors="coerce")
+    if (
+        not np.isfinite(numeric_hours).all()
+        or not np.equal(numeric_hours, np.floor(numeric_hours)).all()
+        or (numeric_hours < 0).any()
+    ):
+        raise ValueError("Hour values must be non-negative finite integers.")
 
     transition_counts = np.zeros((NUM_STATES, NUM_STATES), dtype=float)
     exposure_hours = np.zeros(NUM_STATES, dtype=float)
