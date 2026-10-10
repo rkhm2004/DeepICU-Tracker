@@ -70,6 +70,16 @@ def main():
 
     if len(real_data_tensor) != len(index_df):
         raise ValueError("Tensor rows and trajectory index rows are not aligned.")
+    missingness_columns = [
+        "heart_rate_was_missing",
+        "sbp_was_missing",
+        "wbc_was_missing",
+    ]
+    if not set(missingness_columns).issubset(index_df.columns):
+        raise ValueError(
+            "Trajectory index lacks missingness indicators. Re-run "
+            "src/data_pipeline/mimic_parser.py before inference."
+        )
 
     print(f"Total records found: {len(real_data_tensor):,}")
 
@@ -89,6 +99,7 @@ def main():
                 countdown_std = float(std_times[state])
 
             meta = index_df.iloc[i]
+            missing_feature_count = int(meta[missingness_columns].sum())
             rows.append(
                 {
                     "record_id": i + 1,
@@ -107,6 +118,12 @@ def main():
                         "Critical state: model absorption time is set to zero."
                         if state == 3
                         else "Expected absorption time under fitted CTMC assumptions; not an individual countdown or clinical prediction."
+                    ),
+                    "source_features_missing_count": missing_feature_count,
+                    "input_quality_warning": (
+                        "One or more source features were missing in this hourly bin and imputed."
+                        if missing_feature_count > 0
+                        else "All three source features had measurements in this hourly bin."
                     ),
                 }
             )
