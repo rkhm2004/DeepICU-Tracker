@@ -89,7 +89,7 @@ def generate_three_plots():
     plt.xlabel("Current transient state")
     plt.title("Phase-Type Expected Absorption Time (Research Estimate)")
     plt.tight_layout()
-    plt.savefig("results/graph_3_mgf_countdown.png", dpi=300)
+    plt.savefig("results/graph_3_phase_type_expected_absorption.png", dpi=300)
     plt.close()
 
     print("Successfully generated all 3 graphs in results/.")
