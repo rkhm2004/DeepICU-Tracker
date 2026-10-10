@@ -85,9 +85,9 @@ def generate_three_plots():
         capsize=5,
     )
     plt.xticks(x, summary.index)
-    plt.ylabel("Expected time to Critical (hours)")
+    plt.ylabel("Expected absorption time under CTMC assumptions (hours)")
     plt.xlabel("Current transient state")
-    plt.title("Phase-Type Expected Time to Critical Collapse")
+    plt.title("Phase-Type Expected Absorption Time (Research Estimate)")
     plt.tight_layout()
     plt.savefig("results/graph_3_mgf_countdown.png", dpi=300)
     plt.close()
