@@ -3,6 +3,9 @@ import os
 import sys
 from pathlib import Path
 
+# Ensure repository-root imports work when invoked as python src/inference.py.
+sys.path.insert(0, os.path.abspath("."))
+
 import numpy as np
 import pandas as pd
 import torch
