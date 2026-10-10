@@ -15,6 +15,7 @@ import torch
 from scipy.linalg import expm
 
 from src.markov_mgf.ctmc_estimator import estimate_generator
+from src.markov_mgf.mgf_calculator import phase_type_moments
 from src.vae.model import ICU_VAE
 
 
@@ -119,6 +120,7 @@ def evaluate_pipeline():
     index_path = _require("data/processed/mimic_index.csv")
     checkpoint_path = _require("src/vae/vae_checkpoint.pt")
     preprocessing_path = _require("data/processed/preprocessing.json")
+    quality_path = Path("data/processed/data_quality_report.json")
     metadata_path = _require("data/processed/vae_metadata.json")
     q_path = _require("data/processed/q_matrix.npy")
 
@@ -131,6 +133,10 @@ def evaluate_pipeline():
         preprocessing = json.load(f)
     with open(metadata_path, "r", encoding="utf-8") as f:
         metadata = json.load(f)
+    quality_report = None
+    if quality_path.exists():
+        with open(quality_path, "r", encoding="utf-8") as f:
+            quality_report = json.load(f)
 
     if len(tensor) != len(index_df):
         raise ValueError("Tensor rows and index rows are not aligned.")
@@ -218,7 +224,7 @@ def evaluate_pipeline():
     remaining_parts = []
     for stay_id, stay in test_df.groupby("stay_id", sort=False):
         remaining = _first_critical_remaining_hours(stay)
-        part = stay[["stay_id", "hour", "state", "state_name"]].copy()
+        part = stay[["subject_id", "stay_id", "hour", "state", "state_name"]].copy()
         part["observed_remaining_hours"] = remaining.values
         remaining_parts.append(part)
     test_observed = pd.concat(remaining_parts, ignore_index=True)
@@ -227,8 +233,11 @@ def evaluate_pipeline():
     observed_comparison = {}
     means = np.full(3, np.nan)
     transient_T = Q[:3, :3]
-    if abs(np.linalg.det(transient_T)) > 1e-12:
-        means = -np.linalg.solve(transient_T, np.ones(3))
+    try:
+        means, _, _ = phase_type_moments(transient_T)
+    except (ValueError, np.linalg.LinAlgError):
+        # Keep evaluation explicit if a future fitted Q fails absorption checks.
+        means = np.full(3, np.nan)
     for state in range(3):
         subset = test_observed[(test_observed["state"] == state) & uncensored]
         if len(subset):
@@ -259,9 +268,22 @@ def evaluate_pipeline():
         "preprocessing": {
             "fit_on_split": preprocessing.get("fit_on_split"),
             "features": preprocessing.get("features"),
+            "imputation_method": preprocessing.get("imputation_method"),
+            "max_forward_fill_hours": preprocessing.get("max_forward_fill_hours"),
+            "missingness_indicator_columns": preprocessing.get("missingness_indicator_columns"),
             "scaler_mean": preprocessing.get("scaler_mean"),
             "scaler_scale": preprocessing.get("scaler_scale"),
+            "data_quality_report_available": quality_report is not None,
         },
+        "state_semantics": {
+            "meaning": "model-defined VAE latent bins, not clinically validated severity categories",
+            "latent_score_direction": "lower latent scores map to higher-numbered risk states by implementation convention; clinical direction is unvalidated",
+            "critical_absorbing": "Critical is absorbing in CTMC prognosis; per-hour VAE labels are independently assigned and can later change",
+        },
+        "feature_scope_note": (
+            "Only heart rate, systolic blood pressure and WBC are used. This is not a comprehensive ICU severity assessment."
+        ),
+        "data_quality": quality_report,
         "vae": {
             "cutoffs": cutoffs.tolist(),
             "cutoffs_fit_on_split": metadata.get("cutoffs_fit_on_split"),
@@ -277,14 +299,27 @@ def evaluate_pipeline():
         },
         "test_transition_validation": transition_validation,
         "test_prognosis_comparison": {
-            "censoring_note": "Only test records from stays that reached the observed Critical state within the 48-hour window are included. Records after the first Critical event are excluded.",
-            "uncensored_records": int(uncensored.sum()),
-            "uncensored_stays": int(
-                test_observed.loc[uncensored, "stay_id"].nunique()
+            "censoring_note": (
+                "Only test records before the first observed Critical state are compared. "
+                "Stays ending without observed Critical are right-censored at their last observed hour; "
+                "records after the first Critical state are excluded."
             ),
+            "uncensored_records": int(uncensored.sum()),
+            "uncensored_stays": int(test_observed.loc[uncensored, "stay_id"].nunique()),
             "total_test_records": int(len(test_observed)),
+            "total_test_stays": int(test_observed["stay_id"].nunique()),
+            "uncensored_patients": int(test_observed.loc[uncensored, "subject_id"].nunique()),
+            "total_test_patients": int(test_observed["subject_id"].nunique()),
+            "censored_stays": int(
+                test_observed["stay_id"].nunique()
+                - test_observed.loc[uncensored, "stay_id"].nunique()
+            ),
             "comparison_by_state": observed_comparison,
-            "interpretation_note": "This is a descriptive diagnostic on the small uncensored subset; right-censored test stays are not assigned a false time-to-Critical value.",
+            "interpretation_note": (
+                "Exploratory descriptive diagnostic only. The uncensored subset may be small, "
+                "records within a stay are correlated, and this is not a censoring-aware survival analysis "
+                "or a clinical performance metric."
+            ),
         },
     }
 
