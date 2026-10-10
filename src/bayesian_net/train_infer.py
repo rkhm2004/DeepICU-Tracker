@@ -155,6 +155,36 @@ def explain_row(row, bins_row, probabilities):
     }
 
 
+def merge_bn_inputs(latent, index):
+    """Align latent labels and raw features by subject/stay/hour keys."""
+    keys = ["subject_id", "stay_id", "hour"]
+    required_latent = set(keys + ["split", "state", "state_name"])
+    required_index = set(keys + ["split"] + FEATURES)
+    if not required_latent.issubset(latent.columns):
+        raise ValueError(f"latent data missing columns: {sorted(required_latent - set(latent.columns))}")
+    if not required_index.issubset(index.columns):
+        raise ValueError(f"index data missing columns: {sorted(required_index - set(index.columns))}")
+    if latent.duplicated(keys).any() or index.duplicated(keys).any():
+        raise ValueError("Duplicate subject_id/stay_id/hour keys found in latent or index data.")
+
+    merged = latent[keys + ["split", "state", "state_name"]].merge(
+        index[keys + ["split"] + FEATURES],
+        on=keys,
+        how="left",
+        validate="one_to_one",
+        suffixes=("_latent", "_index"),
+        indicator=True,
+        sort=False,
+    )
+    if len(merged) != len(latent) or not (merged["_merge"] == "both").all():
+        raise ValueError("Not every latent row has exactly one matching index row by keys.")
+    if not (merged["split_latent"] == merged["split_index"]).all():
+        raise ValueError("Latent and index split assignments differ for matching keys.")
+    return merged.drop(columns=["_merge", "split_index"]).rename(
+        columns={"split_latent": "split"}
+    ).reset_index(drop=True)
+
+
 def run_bn(
     latent_path="data/processed/latent_states.csv",
     index_path="data/processed/mimic_index.csv",
@@ -171,35 +201,8 @@ def run_bn(
 
     latent = pd.read_csv(latent_path)
     index = pd.read_csv(index_path)
-    keys = ["subject_id", "stay_id", "hour"]
-    required_latent = set(keys + ["split", "state", "state_name"])
-    required_index = set(keys + ["split"] + FEATURES)
-    if not required_latent.issubset(latent.columns):
-        raise ValueError(f"latent_states.csv missing columns: {sorted(required_latent - set(latent.columns))}")
-    if not required_index.issubset(index.columns):
-        raise ValueError(f"mimic_index.csv missing columns: {sorted(required_index - set(index.columns))}")
-    if latent.duplicated(keys).any() or index.duplicated(keys).any():
-        raise ValueError("Duplicate subject_id/stay_id/hour keys found in latent or index data.")
-
-    # Join by explicit patient/stay/hour keys. Never attach physiological values
-    # by row position, even if current artifacts happen to share the same order.
-    merged = latent[keys + ["split", "state", "state_name"]].merge(
-        index[keys + ["split"] + FEATURES],
-        on=keys,
-        how="left",
-        validate="one_to_one",
-        suffixes=("_latent", "_index"),
-        indicator=True,
-        sort=False,
-    )
-    if len(merged) != len(latent) or not (merged["_merge"] == "both").all():
-        raise ValueError("Not every latent row has exactly one matching index row by keys.")
-    if not (merged["split_latent"] == merged["split_index"]).all():
-        raise ValueError("Latent and index split assignments differ for matching keys.")
-    merged = merged.drop(columns=["_merge", "split_index"]).rename(
-        columns={"split_latent": "split"}
-    )
-    merged = merged.reset_index(drop=True)
+    # A key-based one-to-one join prevents silent feature/label misalignment.
+    merged = merge_bn_inputs(latent, index)
 
     train = merged[merged["split"] == "train"].copy()
     if train.empty:
