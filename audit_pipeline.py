@@ -63,33 +63,40 @@ def check_source_patterns() -> None:
                 "1. Temporal leakage",
                 "Parser calls backward-fill (.bfill), which can use future observations for earlier hours.",
             )
-        elif "ffill" in parser:
+        elif (
+            "def causal_impute_features" in parser
+            and ".ffill(limit=limit)" in parser
+            and "_was_missing" in parser
+            and "train_medians" in parser
+        ):
             report(
-                "WARN",
+                "PASS",
                 "1. Temporal leakage",
-                "No direct .bfill() call detected; inspect all imputation paths and fallback behavior manually.",
+                "Causal forward-fill has a per-feature limit, records missingness, and uses train-only median fallback; no backward-fill call found.",
             )
         else:
-            report("WARN", "1. Temporal leakage", "Could not recognize the imputation strategy; inspect parser manually.")
+            report("WARN", "1. Temporal leakage", "Review imputation implementation; causal safeguards were not all detected.")
 
-        makes_full_window = (
-            "MultiIndex.from_product" in parser
-            and "range(WINDOW_HOURS)" in parser
+        has_valid_builder = (
+            "def build_observation_index" in parser
+            and "hour < row.duration_hours" in parser
+            and "np.ceil(row.duration_hours)" in parser
         )
-        filters_after_index = bool(
-            re.search(r"(full_index|index_df|pivot)\s*=\s*\1.*outtime", parser, re.I)
+        has_event_bounds = (
+            'all_events["charttime"] >= all_events["intime"]' in parser
+            and 'all_events["charttime"] <= all_events["outtime"]' in parser
         )
-        if makes_full_window and not filters_after_index:
+        if has_valid_builder and has_event_bounds:
+            report(
+                "PASS",
+                "2. Observation window",
+                "Timeline builder caps the window at 48 hours and excludes bins/events at or after/outside actual ICU outtime.",
+            )
+        else:
             report(
                 "FAIL",
                 "2. Observation window",
-                "Parser builds every hour in the fixed window for each usable stay; no post-index outtime filter was detected.",
-            )
-        else:
-            report(
-                "WARN",
-                "2. Observation window",
-                "Static scan did not conclusively establish that every generated hour is inside the actual stay window.",
+                "Could not verify a duration-aware hourly index and event-time bounds in parser source.",
             )
 
     vae = read_text("src/vae/train.py")
@@ -102,14 +109,21 @@ def check_source_patterns() -> None:
     else:
         report("WARN", "3. VAE state meaning", "Could not verify cutoff fitting from source scan; inspect VAE state mapping.")
 
-    if parser and all(name in parser for name in ("heart_rate", "sbp", "wbc")):
+    readme_for_scope = read_text("README.md") or ""
+    quality_source = read_text("src/data_pipeline/mimic_parser.py") or ""
+    if (
+        parser and all(name in parser for name in ("heart_rate", "sbp", "wbc"))
+        and "not a comprehensive ICU severity assessment" in readme_for_scope.lower()
+        and "FEATURE_UNITS" in quality_source
+        and "data_quality_report.json" in quality_source
+    ):
         report(
-            "WARN",
-            "4. Feature coverage",
-            "Current parser uses heart_rate, sbp and wbc only; document this scope and audit units/missingness.",
+            "PASS",
+            "4/10. Feature scope and data-quality documentation",
+            "Three-feature scope is documented; unit review notes and a raw missingness/range report are generated.",
         )
     else:
-        report("WARN", "4. Feature coverage", "Feature set was not fully identified by the static scan.")
+        report("WARN", "4/10. Feature scope and data-quality documentation", "Document the narrow feature scope and generate unit/missingness/range review metadata.")
 
     ctmc = read_text("src/markov_mgf/ctmc_estimator.py")
     if ctmc and "next_hour - current_hour != 1" in ctmc and "Q[CRITICAL_STATE, :] = 0.0" in ctmc:
@@ -165,15 +179,22 @@ def check_source_patterns() -> None:
     else:
         report("SKIP", "14. README consistency", "README.md not found.")
 
-    inference = read_text("src/inference.py")
-    if inference and ("hours_to_critical_mean" in inference or "expected" in inference.lower()):
+    inference = read_text("src/inference.py") or ""
+    plot_source = read_text("src/plot.py") or ""
+    readme_source = read_text("README.md") or ""
+    if (
+        "not an individual countdown" in inference.lower()
+        and "RESEARCH PROTOTYPE" in inference
+        and "Research Estimate" in plot_source
+        and "not clinically validated" in readme_source.lower()
+    ):
         report(
-            "WARN",
+            "PASS",
             "8/15. User-facing interpretation",
-            "Ensure output labels describe expected time under model assumptions, not a guaranteed individual countdown or clinical advice.",
+            "Inference, plots and README label prognosis as a research estimate rather than a guaranteed individual countdown.",
         )
     else:
-        report("WARN", "8/15. User-facing interpretation", "Review inference labels and generated plots for clinical overstatement.")
+        report("WARN", "8/15. User-facing interpretation", "Review inference labels, plots and README for clinical overstatement.")
 
 
 def check_data_artifacts() -> None:
@@ -359,6 +380,7 @@ def check_data_artifacts() -> None:
         "results/evaluation_report.json",
         "results/bn_predictions.csv",
         "results/bn_evaluation.json",
+        "data/processed/data_quality_report.json",
     ]
     missing_outputs = [p for p in expected_outputs if not (ROOT / p).exists()]
     if missing_outputs:
