@@ -49,6 +49,8 @@ class TestBayesianNetwork(unittest.TestCase):
     def test_nonfinite_inference_feature_is_rejected(self):
         cpt, _ = fit_bayesian_network(self.train, self.cutoffs)
         broken = self.train.copy()
+        # Pandas may reject assigning infinity into an integer-typed column.
+        broken["heart_rate"] = broken["heart_rate"].astype(float)
         broken.loc[0, "heart_rate"] = np.inf
         with self.assertRaises(ValueError):
             infer_risk_probabilities(broken, self.cutoffs, cpt)
