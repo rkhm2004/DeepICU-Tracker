@@ -86,15 +86,9 @@ The implementation also provides:
 
 Thus, the system reports both an expected countdown and uncertainty around that countdown.
 
-### Stage 5 — Bayesian Network — Pending
+### Stage 5 — Bayesian Network — Proof of Concept Implemented
 
-The planned BN provides the explanatory layer. It will connect static patient/admission factors with the real-time risk state to answer questions such as:
-
-- Which patient factors are associated with the current risk?
-- How do static factors affect risk probabilities?
-- Which factors can provide a useful root-cause explanation?
-
-**No BN results are reported yet because this component has not been implemented.**
+The current discrete BN estimates risk-state probabilities from heart rate, systolic blood pressure and WBC feature bins. Feature cutoffs and the conditional probability table are fitted on training records only. Its output is agreement with VAE-derived labels, not clinical outcome accuracy. Static patient/admission priors and causal explanations are not implemented yet.
 
 ---
 
@@ -152,7 +146,7 @@ The planned BN provides the explanatory layer. It will connect static patient/ad
     | Bayesian    |   | Clinical Risk Output |
     | Network     |   | Current state        |
     |             |   | Expected time        |
-    | PENDING     |   | Uncertainty / SD     |
+    | BN proof    |   | Uncertainty / SD     |
     | Explanation |   | Risk trajectory      |
     +-------------+   +----------------------+
 
@@ -160,372 +154,113 @@ The BN proof of concept is implemented. Broader integration with static patient/
 
 ---
 
-## 5. Leakage-Safe Experimental Design
+## 5. Leakage-Safe Preprocessing and Data Quality
 
-The current run contains:
+The parser creates no more than the first 48 hourly bins of each ICU stay, and only keeps a bin when its start hour is before the recorded ICU outtime. Events outside the documented intime/outtime interval are excluded.
 
-| Split | Patients | ICU Stays | Hourly Records |
-|---|---:|---:|---:|
-| Train | 70 | 95 | 4,560 |
-| Validation | 15 | 23 | 1,104 |
-| Test | 15 | 22 | 1,056 |
-| **Total** | **100** | **140** | **6,720** |
+The current feature set is heart rate, systolic blood pressure (SBP), and white blood cell count (WBC). This is a narrow prototype feature set and is **not a comprehensive ICU severity assessment**. Expected units are recorded as review notes; confirm them against the source item metadata before interpreting values. Broad review bounds flag values for inspection and do not silently clip or delete them.
 
-The split is **patient-level**, so all ICU stays belonging to a patient remain in the same split.
+Missing-value handling is causal:
+- Forward-fill occurs only within a stay and has per-feature limits: heart rate 6 hours, SBP 6 hours, WBC 24 hours.
+- Backward-fill is not used.
+- Missingness indicators are preserved in the index for auditing.
+- Remaining missing values use training-split medians only.
+- StandardScaler is fitted on training records only.
+- Patient IDs are disjoint across train, validation and test.
+- VAE state cutoffs, BN discretization cutoffs and BN CPT parameters are fitted using training data only.
 
-The pipeline also enforces:
+The parser generates data/processed/data_quality_report.json with raw missingness, observed ranges, non-positive counts, broad-range flags and unit-review notes. Re-run the parser and every downstream stage after any preprocessing change; do not reuse old tensors or model artifacts with a newly generated index.
 
-- fallback imputation statistics fitted on training data only;
-- StandardScaler fitted on training data only;
-- VAE trained on training records;
-- validation used for checkpoint selection and early stopping;
-- test used only for final evaluation;
-- VAE state cutoffs learned from training latent scores only;
-- CTMC estimated from training trajectories only.
+## 6. Model and Evaluation Semantics
 
-The evaluation confirms zero subject overlap between train, validation, and test.
+### VAE states
 
----
+The VAE reconstructs the three standardized physiological features and produces a one-dimensional latent score. Three cutoffs derived from training latent scores map each hour to Low Risk, Medium Risk, High Risk or Critical. These are **model-defined labels**, not validated clinical severity categories. Reconstruction loss alone does not prove that the score predicts deterioration or mortality.
 
-# 6. Results Obtained So Far
+The VAE assigns each hourly state independently, so its label may move back from Critical to a non-Critical state. The CTMC/Phase-Type model instead treats Critical as an absorbing state and uses only pre-Critical trajectory intervals for its transition model. This is a modelling assumption, not proof that a real patient's condition is irreversible.
 
-## 6.1 Data Processing
+### CTMC
 
-The current run successfully extracted **6,720 hourly records across 140 ICU stays and 100 patients**.
+The generator is estimated from training trajectories only. Transition intervals are counted only between consecutive hours within the same stay; gaps are skipped. Critical is absorbing for CTMC prognosis. The implementation and audit check finite Q, non-negative off-diagonal rates, zero row sums and transition/exposure artifact validity.
 
-- Train: 4,560 records
-- Validation: 1,104 records
-- Test: 1,056 records
+### Phase-Type / MGF
 
-No patient appears in more than one split.
+The transient generator is checked for finite values, non-negative off-diagonal rates, non-positive row sums, eventual absorption and numerical conditioning. The code validates finite moments and M(0)=1.
 
----
+Expected absorption time and its standard deviation are model-based population quantities under fitted CTMC assumptions. They are **not an individual countdown, a calibrated prediction interval or a clinical prediction**. Discharge, death, treatment, transfer, changing physiology and censoring are not fully represented by this simple model.
 
-## 6.2 VAE Results
+### Bayesian Network
 
-The VAE was trained for up to 50 epochs with validation-based early stopping. Training stopped at epoch 40 after the validation loss stopped improving.
+The current network is:
 
-| Split | Loss / Record | Reconstruction MSE | KL |
-|---|---:|---:|---:|
-| Train | 2.5913 | 2.0584 | 0.5329 |
-| Validation | 5.1269 | 2.4282 | 2.6987 |
-| Test | 5.3843 | 4.2800 | 1.1043 |
+    HeartRateLevel ─┐
+    SBPLevel        ─┼──> RiskState
+    WBCLevel        ─┘
 
-Training-derived latent cutoffs:
+It estimates P(RiskState | HeartRateLevel, SBPLevel, WBCLevel) with a smoothed conditional probability table. Latent labels and raw feature values are aligned using subject_id, stay_id and hour keys; duplicate keys, missing matches and inconsistent splits raise errors.
 
-    [-0.3169, 0.0126, 0.4792]
+The BN report includes a confusion matrix, per-class precision/recall/F1, macro-F1 and balanced accuracy. All these metrics measure agreement with VAE-derived surrogate labels, not clinical outcome accuracy. The BN is not a causal explanation model. Static patient/admission priors are not yet included.
 
-These produce the four reproducible states Low, Medium, High, and Critical.
+### Prognosis evaluation
 
----
+The current prognosis comparison is descriptive and includes only observations before the first Critical label in stays where Critical is observed. Stays that end without an observed Critical label are right-censored; they must not be assigned an invented event time. A small uncensored subset is exploratory only. A stronger analysis requires a prespecified event, a prediction horizon, suitable censoring-aware methods, independent outcomes and uncertainty estimates.
 
-## 6.3 Risk-State Distribution
-
-Training is approximately balanced because the state cutoffs are derived from the training latent distribution.
-
-### Validation
-
-| State | Percentage |
-|---|---:|
-| Low Risk | 38.95% |
-| Medium Risk | 36.32% |
-| High Risk | 8.70% |
-| Critical | 16.03% |
-
-### Test
-
-| State | Percentage |
-|---|---:|
-| Low Risk | 42.33% |
-| Medium Risk | 17.71% |
-| High Risk | 9.19% |
-| Critical | 30.78% |
-
-These are observed distributions and are not themselves clinical performance measures.
-
----
-
-## 6.4 CTMC Results
-
-The CTMC was fitted using the **training split only**.
-
-Estimated generator Q, in rates/hour:
-
-    [[-0.096529,  0.082430,  0.013015,  0.001085],
-     [ 0.120930, -0.231008,  0.099225,  0.010853],
-     [ 0.020349,  0.171512, -0.270349,  0.078488],
-     [ 0.000000,  0.000000,  0.000000,  0.000000]]
-
-Critical is absorbing.
-
-Training transition counts:
-
-    [[ 0, 76, 12,  1],
-     [78,  0, 64,  7],
-     [ 7, 59,  0, 27],
-     [ 0,  0,  0,  0]]
-
-Training exposure:
-
-| State | Exposure |
-|---|---:|
-| Low Risk | 922 h |
-| Medium Risk | 645 h |
-| High Risk | 344 h |
-| Critical | Absorbing |
-
-The estimated Q satisfies the CTMC requirements: non-negative off-diagonal rates, zero row sums, and an absorbing Critical state.
-
----
-
-## 6.5 Held-Out CTMC Validation
-
-The trained CTMC is evaluated on the unseen test set using the one-hour transition matrix:
-
-    P(1) = exp(Q)
-
-### Observed vs modelled probabilities
-
-**Low Risk**
-
-Observed: [0.9061, 0.0856, 0.0083, 0.0000]
-
-Model: [0.9125, 0.0713, 0.0143, 0.0020]
-
-**Medium Risk**
-
-Observed: [0.2832, 0.5841, 0.1327, 0.0000]
-
-Model: [0.1040, 0.8046, 0.0782, 0.0131]
-
-**High Risk**
-
-Observed: [0.0526, 0.2982, 0.6140, 0.0351]
-
-Model: [0.0256, 0.1348, 0.7699, 0.0698]
-
-### Mean Absolute Error
-
-| Current State | MAE |
-|---|---:|
-| Low Risk | 0.0072 |
-| Medium Risk | 0.1168 |
-| High Risk | 0.0953 |
-| **Overall transient-state MAE** | **0.0731** |
-
-This is a **transition-model diagnostic**, not a clinical accuracy metric.
-
-The low-risk transitions match particularly closely. Medium- and high-risk transitions show larger discrepancies, which is useful information for future refinement.
-
----
-
-## 6.6 Phase-Type / MGF Results
-
-Expected remaining time until Critical:
-
-| Current State | Expected Time | SD |
-|---|---:|---:|
-| Low Risk | 67.99 h | 62.48 h |
-| Medium Risk | 60.08 h | 61.84 h |
-| High Risk | 46.93 h | 59.18 h |
-| Critical | 0 h | 0 h |
-
-The model therefore gives the intended ordering:
-
-    Low Risk       ≈ 67.99 h
-    Medium Risk    ≈ 60.08 h
-    High Risk      ≈ 46.93 h
-    Critical       = 0 h
-
-The standard deviation is large, so the output should be interpreted as an expected time with substantial uncertainty rather than a precise countdown.
-
----
-
-## 6.7 Prognosis Diagnostic on Test Data
-
-A descriptive comparison was performed between predicted Phase-Type time-to-Critical and observed remaining time to the first Critical state.
-
-Only test stays that actually reached Critical within the 48-hour observation window were usable.
-
-- Usable records: **26**
-- Usable ICU stays: **11**
-
-| State | Records | Predicted Mean | Observed Mean Remaining | MAE |
-|---|---:|---:|---:|---:|
-| Low Risk | 0 | 67.99 h | — | — |
-| Medium Risk | 1 | 60.08 h | 4.00 h | 56.08 h |
-| High Risk | 14 | 46.93 h | 5.14 h | 41.79 h |
-
-These values **must not be presented as clinical prediction accuracy**. The usable sample is small, and stays that never reach Critical during the 48-hour observation window are right-censored.
-
-Therefore this is currently a **descriptive diagnostic**, not a validated clinical performance metric.
-
----
-
-## 6.8 Inference
-
-The inference pipeline successfully generates:
-
-    results/inference_results.csv
-
-Each record includes the latent score, risk state, expected time-to-Critical, and Phase-Type standard deviation.
-
-Example from the current run:
-
-    -0.1278 -> High Risk -> 46.93 h
-    -0.1717 -> High Risk -> 46.93 h
-    -0.3601 -> Critical  -> 0 h
-
-Inference uses the same saved training-derived state cutoffs used by the VAE stage.
-
----
-
-## 7. Validation and Testing
-
-The automated tests and evaluation pipeline currently check:
-
-- patient/stay boundaries are respected;
-- CTMC matrices are mathematically valid;
-- P(t)=exp(Qt) behaves as a stochastic transition matrix;
-- the Phase-Type MGF satisfies M(0)=1;
-- Phase-Type moments are positive where expected;
-- post-Critical records are excluded from remaining-time calculations;
-- empirical transition validation includes self-transitions;
-- split behaviour is reproducible;
-- no patient appears in multiple train/validation/test splits;
-- preprocessing metadata confirms train-only fitting;
-- VAE cutoffs confirm train-only fitting;
-- CTMC estimation uses training trajectories only.
-
-Run the full evaluation with:
-
-    python src/evaluation.py
-
-It generates:
-
-- results/evaluation_report.json
-- results/vae_split_metrics.csv
-- evaluation graphs
-
----
-
-## 8. Current Project Status
+## 7. Current Implementation Status
 
 | Component | Status |
 |---|---|
-| MIMIC-IV preprocessing | Complete |
-| Patient-level data split | Complete |
-| Leakage-safe imputation/scaling | Complete |
-| VAE | Complete |
-| Latent risk score | Complete |
-| Low/Medium/High/Critical mapping | Complete |
-| CTMC estimation | Complete |
-| Absorbing Critical state | Complete |
-| Phase-Type MGF | Complete |
-| Expected time-to-Critical | Complete |
-| Variance / Standard deviation | Complete |
-| Inference pipeline | Complete |
-| Visualizations | Complete |
-| Mathematical regression tests | Complete |
-| Held-out CTMC validation | Complete |
-| Prognosis diagnostic | Complete |
-| **Bayesian Network (discrete CPT model)** | **Implemented — proof of concept** |
-| **Static demographic/admission priors** | **Not available in current feature set** |
-| **Final explanatory/dashboard integration** | **BN prediction CSV available; dashboard integration pending** |
+| Patient-level data split | Implemented and checked |
+| Duration-aware hourly index | Implemented |
+| Causal imputation and missingness indicators | Implemented |
+| Train-only fallback medians and scaler | Implemented |
+| Data-quality report | Implemented |
+| VAE and training-derived latent cutoffs | Implemented; clinical meaning not validated |
+| CTMC estimation and absorbing Critical model | Implemented |
+| Phase-Type/MGF numerical guards | Implemented |
+| Inference and research-labelled plots | Implemented |
+| BN CPT, keyed alignment and class-wise metrics | Implemented |
+| Static patient/admission priors | Not implemented |
+| Independent clinical-outcome validation | Not implemented |
+| Clinical dashboard | Not implemented |
 
----
+Passing software tests does not establish clinical validity or suitability for bedside decision-making.
 
-## 9. Bayesian Network — Current Implementation
+## 8. Run Commands
 
-A first discrete Bayesian Network implementation is available at `src/bayesian_net/train_infer.py`.
+Run these from the repository root in the activated project environment. The parser must run first after the preprocessing changes, because all downstream artifacts depend on its row set and feature values.
 
-Current structure:
+\`\`\`powershell
+# Regression tests
+python -m unittest tests/test_mathematical_pipeline.py
+python -m unittest tests/test_bayesian_network.py
 
-    HeartRateLevel ─┐
-    SBPLevel       ─┼──> RiskState
-    WBCLevel       ─┘
+# Rebuild all artifacts using the corrected parser
+python src/data_pipeline/mimic_parser.py
+python src/vae/train.py
+python src/markov_mgf/ctmc_estimator.py
+python src/markov_mgf/mgf_calculator.py
+python src/inference.py
+python src/plot.py
+python src/evaluation.py
+python src/bayesian_net/train_infer.py
 
-Each continuous physiological feature is discretized into Low / Moderate / High levels. The tertile cutoffs are fitted on training records only. A smoothed conditional probability table (CPT) estimates `P(RiskState | HeartRateLevel, SBPLevel, WBCLevel)`, using Laplace smoothing to avoid zero probabilities. The trained CPT is then evaluated on the held-out test split.
+# Run the non-destructive audit against the new artifacts
+python audit_pipeline.py
+\`\`\`
 
-The script produces:
+## 9. Generated Artifacts
 
-- `results/bn_predictions.csv` — per-record risk-state probabilities, predicted state, confidence, and a readable feature-bin profile;
-- `results/bn_evaluation.json` — held-out agreement with VAE-derived risk labels and evaluation notes;
-- `data/processed/bn_model.json` — training cutoffs and learned CPT.
+- data/processed/mimic_tensor.pt — scaled three-feature model input.
+- data/processed/mimic_index.csv — subject/stay/hour keys, split, imputed raw-unit features and missingness indicators.
+- data/processed/preprocessing.json — training medians, scaler parameters and preprocessing configuration.
+- data/processed/data_quality_report.json — raw missingness, feature ranges and review flags.
+- data/processed/latent_states.csv — VAE latent scores and model-defined states.
+- data/processed/q_matrix.npy — estimated CTMC generator.
+- results/inference_results.csv — per-hour state and model-based expected absorption time.
+- results/evaluation_report.json — split integrity, VAE metrics, CTMC diagnostics and descriptive prognosis evaluation.
+- results/bn_predictions.csv — held-out BN probabilities and explanations.
+- results/bn_evaluation.json — confusion matrix and agreement metrics against VAE labels.
 
-**Important limitation:** this BN currently explains/reproduces the VAE-derived risk-state labels from the available physiological inputs. Its test score measures agreement with those labels, **not clinical outcome accuracy**. Static demographic/admission priors are not currently present in the processed feature set, so they are not claimed to be part of this first BN version. The explanatory/dashboard integration can be expanded once appropriate prior variables and validation targets are available.
+## 10. Final Note
 
----
-
-## 10. Running the Current Pipeline
-
-From the repository root:
-
-    python -m unittest tests/test_mathematical_pipeline.py
-    python src/data_pipeline/mimic_parser.py
-    python src/vae/train.py
-    python src/markov_mgf/ctmc_estimator.py
-    python src/markov_mgf/mgf_calculator.py
-    python src/inference.py
-    python src/plot.py
-    python src/evaluation.py
-    python -m unittest tests/test_bayesian_network.py
-    python src/bayesian_net/train_infer.py
-
-Run the BN after parser + VAE training, because it consumes `mimic_index.csv` and `latent_states.csv`. Generated patient-derived data and model artifacts are ignored by Git through .gitignore.
-
----
-
-## 11. Repository Structure
-
-    DeepICU-Tracker/
-    ├── README.md
-    ├── requirements.txt
-    ├── .gitignore
-    ├── data/
-    │   ├── raw/
-    │   └── processed/
-    ├── src/
-    │   ├── data_pipeline/
-    │   │   └── mimic_parser.py
-    │   ├── vae/
-    │   │   ├── model.py
-    │   │   └── train.py
-    │   ├── markov_mgf/
-    │   │   ├── ctmc_estimator.py
-    │   │   └── mgf_calculator.py
-    │   ├── bayesian_net/
-    │   │   └── train_infer.py
-    │   ├── evaluation.py
-    │   ├── inference.py
-    │   └── plot.py
-    └── tests/
-        ├── test_mathematical_pipeline.py
-        └── test_bayesian_network.py
-
----
-
-## 12. Final Summary
-
-The mathematical core of the proposed ICU early-warning system is currently operational:
-
-    ICU measurements
-          ↓
-    Leakage-safe preprocessing
-          ↓
-    VAE latent physiological representation
-          ↓
-    Four interpretable risk states
-          ↓
-    Training-only CTMC estimation
-          ↓
-    Phase-Type / MGF time-to-Critical model
-          ↓
-    Expected time + uncertainty
-          ↓
-    Held-out mathematical validation
-          ↓
-    Discrete Bayesian Network
-    (physiological feature bins -> risk probabilities)
-
-The current implementation has a working **VAE → Risk State → CTMC → Phase-Type/MGF** pipeline and a first **discrete Bayesian Network proof of concept**. Further work is still needed to incorporate static patient/admission priors and validate against independent clinical outcomes before claiming clinical explanations or a fully validated clinical early-warning system.
+DeepICU-Tracker is a mathematical/software research prototype. It is not certified, clinically validated or intended for bedside decisions. Its current contribution is a reproducible pipeline with leakage-aware preprocessing, stochastic-process modelling, numerical checks and transparent surrogate-label evaluation. Independent clinical outcome validation remains future work.
