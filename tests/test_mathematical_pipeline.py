@@ -114,6 +114,8 @@ class TestCTMC(unittest.TestCase):
 
         self.assertTrue(np.all(P >= -1e-12))
         self.assertTrue(np.allclose(P.sum(axis=1), 1.0, atol=1e-10))
+        with self.assertRaises(ValueError):
+            transition_matrix(Q, -1.0)
 
 
 class TestPhaseType(unittest.TestCase):
