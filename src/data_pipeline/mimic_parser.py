@@ -32,7 +32,7 @@ FEATURE_UNITS = {
 FEATURE_REVIEW_BOUNDS = {
     "heart_rate": (20.0, 250.0),
     "sbp": (30.0, 300.0),
-    "wbc": (0.1, 300.0),
+    "wbc": (0.1, 100.0),
 }
 RANDOM_SEED = 42
 TRAIN_FRACTION = 0.70
