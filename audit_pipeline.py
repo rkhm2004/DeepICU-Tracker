@@ -148,14 +148,24 @@ def check_source_patterns() -> None:
         report("SKIP", "7. Phase-Type edge cases", "MGF source not found.")
 
     bn = read_text("src/bayesian_net/train_infer.py")
-    if bn and "len(latent) != len(index)" in bn and "to_numpy()" in bn:
+    if (
+        bn
+        and "def merge_bn_inputs" in bn
+        and 'keys = ["subject_id", "stay_id", "hour"]' in bn
+        and 'validate="one_to_one"' in bn
+        and 'merged["split_latent"] == merged["split_index"]' in bn
+    ):
+        report(
+            "PASS",
+            "13. BN row alignment",
+            "BN aligns features and labels with unique subject/stay/hour keys and validates one-to-one matches and split agreement.",
+        )
+    elif bn:
         report(
             "FAIL",
             "13. BN row alignment",
-            "BN checks only row counts and attaches feature arrays positionally; it does not first assert matching subject_id/stay_id/hour keys.",
+            "BN source does not show complete key-based one-to-one alignment safeguards.",
         )
-    elif bn:
-        report("WARN", "13. BN row alignment", "Inspect merge keys and output alignment manually.")
     else:
         report("SKIP", "13. BN row alignment", "BN source not found.")
 
