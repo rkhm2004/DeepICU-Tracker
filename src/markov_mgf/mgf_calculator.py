@@ -79,13 +79,19 @@ def phase_type_mgf(s, initial_state, T):
     T = validate_transient_generator(T)
     if not 0 <= initial_state < T.shape[0]:
         raise ValueError(f"initial_state must be in [0, {T.shape[0] - 1}].")
-    if not np.isfinite(float(s)):
+    s = float(s)
+    if not np.isfinite(s):
         raise ValueError("s must be finite.")
+    spectral_abscissa = float(np.max(np.real(np.linalg.eigvals(T))))
+    if spectral_abscissa + s >= -TOL:
+        raise ValueError(
+            "MGF does not exist at this s: T + sI is not strictly stable."
+        )
 
     alpha = np.zeros(T.shape[0])
     alpha[initial_state] = 1.0
     absorption = -T @ np.ones(T.shape[0])
-    system = -(T + float(s) * np.eye(T.shape[0]))
+    system = -(T + s * np.eye(T.shape[0]))
     condition = float(np.linalg.cond(system))
     if not np.isfinite(condition) or condition > MAX_CONDITION_NUMBER:
         raise ValueError("MGF system is singular or numerically ill-conditioned.")
