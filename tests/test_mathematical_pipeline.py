@@ -83,6 +83,24 @@ class TestCTMC(unittest.TestCase):
         self.assertEqual(exposure[0], 1.0)
         self.assertEqual(exposure[1], 1.0)
 
+    def test_invalid_time_step_is_rejected(self):
+        df = pd.DataFrame({
+            "stay_id": [1, 1],
+            "hour": [0, 1],
+            "state": [0, 1],
+        })
+        with self.assertRaises(ValueError):
+            estimate_generator(df, dt_hours=0)
+
+    def test_duplicate_stay_hour_is_rejected(self):
+        df = pd.DataFrame({
+            "stay_id": [1, 1],
+            "hour": [0, 0],
+            "state": [0, 1],
+        })
+        with self.assertRaises(ValueError):
+            estimate_generator(df)
+
     def test_transition_matrix_is_stochastic(self):
         Q = np.array(
             [
