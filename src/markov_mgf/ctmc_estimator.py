@@ -48,6 +48,7 @@ def estimate_generator(df, dt_hours=DEFAULT_DT_HOURS):
         or (numeric_hours < 0).any()
     ):
         raise ValueError("Hour values must be non-negative finite integers.")
+    data["hour"] = numeric_hours.astype(int)
 
     transition_counts = np.zeros((NUM_STATES, NUM_STATES), dtype=float)
     exposure_hours = np.zeros(NUM_STATES, dtype=float)
@@ -140,7 +141,19 @@ def transition_matrix(Q, t_hours):
     """Compute P(t) = exp(Q t), the CTMC transition probability matrix."""
     from scipy.linalg import expm
 
-    return expm(np.asarray(Q, dtype=float) * float(t_hours))
+    Q = np.asarray(Q, dtype=float)
+    t_hours = float(t_hours)
+    if Q.ndim != 2 or Q.shape[0] != Q.shape[1] or Q.shape[0] == 0:
+        raise ValueError("Q must be a non-empty square matrix.")
+    if not np.isfinite(Q).all() or not np.isfinite(t_hours) or t_hours < 0:
+        raise ValueError("Q and t_hours must be finite, with t_hours non-negative.")
+    if not np.allclose(Q.sum(axis=1), 0.0, atol=1e-8):
+        raise ValueError("Q must have row sums equal to zero.")
+    off_diagonal = Q.copy()
+    np.fill_diagonal(off_diagonal, 0.0)
+    if np.any(off_diagonal < -1e-10):
+        raise ValueError("Q off-diagonal rates must be non-negative.")
+    return expm(Q * t_hours)
 
 
 if __name__ == "__main__":
