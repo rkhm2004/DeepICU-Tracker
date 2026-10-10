@@ -85,6 +85,59 @@ def infer_risk_probabilities(feature_df, cutoffs, cpt):
     return probabilities, bins
 
 
+def compute_classification_metrics(y_true, y_pred):
+    """Return confusion matrix and class-wise metrics against surrogate labels.
+
+    These metrics quantify agreement with VAE-derived states, not clinical accuracy.
+    Confusion-matrix rows are true VAE states; columns are BN-predicted states.
+    """
+    y_true = np.asarray(y_true, dtype=int).reshape(-1)
+    y_pred = np.asarray(y_pred, dtype=int).reshape(-1)
+    if y_true.shape != y_pred.shape or y_true.size == 0:
+        raise ValueError("y_true and y_pred must have the same non-empty shape.")
+    if not np.isin(y_true, np.arange(NUM_STATES)).all():
+        raise ValueError("y_true contains invalid risk-state IDs.")
+    if not np.isin(y_pred, np.arange(NUM_STATES)).all():
+        raise ValueError("y_pred contains invalid risk-state IDs.")
+
+    matrix = np.zeros((NUM_STATES, NUM_STATES), dtype=int)
+    np.add.at(matrix, (y_true, y_pred), 1)
+    support = matrix.sum(axis=1)
+    predicted_count = matrix.sum(axis=0)
+    true_positive = np.diag(matrix).astype(float)
+    precision = np.divide(
+        true_positive, predicted_count,
+        out=np.zeros(NUM_STATES, dtype=float), where=predicted_count > 0
+    )
+    recall = np.divide(
+        true_positive, support,
+        out=np.zeros(NUM_STATES, dtype=float), where=support > 0
+    )
+    f1 = np.divide(
+        2 * precision * recall, precision + recall,
+        out=np.zeros(NUM_STATES, dtype=float), where=(precision + recall) > 0
+    )
+    present = support > 0
+    accuracy = float(true_positive.sum() / y_true.size)
+    return {
+        "labels_order": STATE_NAMES,
+        "confusion_matrix": matrix.tolist(),
+        "support_by_class": {STATE_NAMES[i]: int(support[i]) for i in range(NUM_STATES)},
+        "predicted_count_by_class": {STATE_NAMES[i]: int(predicted_count[i]) for i in range(NUM_STATES)},
+        "per_class_precision": {STATE_NAMES[i]: float(precision[i]) for i in range(NUM_STATES)},
+        "per_class_recall": {STATE_NAMES[i]: float(recall[i]) for i in range(NUM_STATES)},
+        "per_class_f1": {STATE_NAMES[i]: float(f1[i]) for i in range(NUM_STATES)},
+        "accuracy": accuracy,
+        "macro_precision": float(np.mean(precision)),
+        "macro_recall": float(np.mean(recall)),
+        "macro_f1": float(np.mean(f1)),
+        # Standard balanced accuracy averages recall over classes present in y_true.
+        "balanced_accuracy": float(np.mean(recall[present])),
+        "balanced_accuracy_classes_present": [STATE_NAMES[i] for i in range(NUM_STATES) if present[i]],
+        "metric_target": "agreement with VAE-derived risk-state labels; not clinical outcome accuracy",
+    }
+
+
 def explain_row(row, bins_row, probabilities):
     """Create a transparent, simple explanation of the strongest BN result."""
     predicted = int(np.argmax(probabilities))
@@ -118,17 +171,35 @@ def run_bn(
 
     latent = pd.read_csv(latent_path)
     index = pd.read_csv(index_path)
-    if len(latent) != len(index):
-        raise ValueError("latent_states.csv and mimic_index.csv row counts differ.")
-    if "split" not in latent or "state" not in latent:
-        raise ValueError("latent_states.csv must contain split and state columns.")
+    keys = ["subject_id", "stay_id", "hour"]
+    required_latent = set(keys + ["split", "state", "state_name"])
+    required_index = set(keys + ["split"] + FEATURES)
+    if not required_latent.issubset(latent.columns):
+        raise ValueError(f"latent_states.csv missing columns: {sorted(required_latent - set(latent.columns))}")
+    if not required_index.issubset(index.columns):
+        raise ValueError(f"mimic_index.csv missing columns: {sorted(required_index - set(index.columns))}")
+    if latent.duplicated(keys).any() or index.duplicated(keys).any():
+        raise ValueError("Duplicate subject_id/stay_id/hour keys found in latent or index data.")
 
-    # Use raw-unit feature values from mimic_index.csv for interpretable bins.
-    merged = latent[["subject_id", "stay_id", "hour", "split", "state", "state_name"]].copy()
-    for feature in FEATURES:
-        if feature not in index:
-            raise ValueError(f"{feature} missing from mimic_index.csv.")
-        merged[feature] = index[feature].to_numpy()
+    # Join by explicit patient/stay/hour keys. Never attach physiological values
+    # by row position, even if current artifacts happen to share the same order.
+    merged = latent[keys + ["split", "state", "state_name"]].merge(
+        index[keys + ["split"] + FEATURES],
+        on=keys,
+        how="left",
+        validate="one_to_one",
+        suffixes=("_latent", "_index"),
+        indicator=True,
+        sort=False,
+    )
+    if len(merged) != len(latent) or not (merged["_merge"] == "both").all():
+        raise ValueError("Not every latent row has exactly one matching index row by keys.")
+    if not (merged["split_latent"] == merged["split_index"]).all():
+        raise ValueError("Latent and index split assignments differ for matching keys.")
+    merged = merged.drop(columns=["_merge", "split_index"]).rename(
+        columns={"split_latent": "split"}
+    )
+    merged = merged.reset_index(drop=True)
 
     train = merged[merged["split"] == "train"].copy()
     if train.empty:
@@ -155,7 +226,11 @@ def run_bn(
     explanation_df = pd.DataFrame(explanations, index=outputs.index)
     outputs = pd.concat([outputs, explanation_df], axis=1)
 
-    accuracy = float((outputs["bn_predicted_state_id"].to_numpy() == test["state"].to_numpy()).mean())
+    metrics = compute_classification_metrics(
+        test["state"].to_numpy(),
+        outputs["bn_predicted_state_id"].to_numpy(),
+    )
+    accuracy = metrics["accuracy"]
     report = {
         "network": "HeartRateLevel, SBPLevel, WBCLevel -> RiskState",
         "features": FEATURES,
@@ -169,6 +244,7 @@ def run_bn(
         "cutoffs": cutoffs,
         "cpt_shape": list(cpt.shape),
         "test_accuracy_against_vae_states": accuracy,
+        **metrics,
         "interpretation_warning": (
             "This is a proof-of-concept BN trained to explain/reproduce VAE-derived "
             "risk states from the same physiological features, not an independent "
@@ -201,6 +277,10 @@ def run_bn(
     print("Structure: HeartRateLevel + SBPLevel + WBCLevel -> RiskState")
     print(f"Training records: {len(train):,}; test records: {len(test):,}")
     print(f"Test agreement with VAE states: {accuracy:.4f}")
+    print(f"Macro-F1 against VAE states: {metrics['macro_f1']:.4f}")
+    print(f"Balanced accuracy against VAE states: {metrics['balanced_accuracy']:.4f}")
+    print("Confusion matrix (rows=true VAE state, columns=BN prediction):")
+    print(np.asarray(metrics["confusion_matrix"], dtype=int))
     print(f"Predictions: {output_path}")
     print(f"Model and CPT: {model_path}")
     print(f"Evaluation report: {report_path}")
