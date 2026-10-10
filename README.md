@@ -84,7 +84,7 @@ The implementation also provides:
 - variance;
 - standard deviation.
 
-Thus, the system reports both an expected countdown and uncertainty around that countdown.
+Thus, the system reports a model-based expected absorption time and its standard deviation; this is not an individual countdown.
 
 ### Stage 5 — Bayesian Network — Proof of Concept Implemented
 
