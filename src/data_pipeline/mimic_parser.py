@@ -20,6 +20,20 @@ ITEM_IDS = {
 
 FEATURES = ["heart_rate", "sbp", "wbc"]
 WINDOW_HOURS = 48
+# Maximum consecutive missing hourly bins carried forward from a prior observation.
+# WBC is a lab measured less frequently than bedside vitals, so its carry window is longer.
+MAX_FORWARD_FILL_HOURS = {"heart_rate": 6, "sbp": 6, "wbc": 24}
+FEATURE_UNITS = {
+    "heart_rate": "beats/minute (verify source item/unit metadata)",
+    "sbp": "mmHg (verify source item/unit metadata)",
+    "wbc": "typically 10^9/L or K/uL; verify source unit metadata",
+}
+# Broad review bounds are flags for inspection, not clinical exclusion rules.
+FEATURE_REVIEW_BOUNDS = {
+    "heart_rate": (20.0, 250.0),
+    "sbp": (30.0, 300.0),
+    "wbc": (0.1, 300.0),
+}
 RANDOM_SEED = 42
 TRAIN_FRACTION = 0.70
 VAL_FRACTION = 0.15
@@ -72,8 +86,91 @@ def _assign_labs_to_icu_stays(labs: pd.DataFrame, stays: pd.DataFrame) -> pd.Dat
     return labs.loc[in_stay, ["stay_id", "charttime", "itemid", "valuenum"]]
 
 
+def build_observation_index(stays, usable_stay_ids, window_hours=WINDOW_HOURS):
+    """Create hourly rows only while the ICU stay is actually in progress.
+
+    An hourly bin is valid when its start hour is before outtime. The final bin
+    may be partial, but no bin starts at or after the documented ICU outtime.
+    The model window is additionally capped at window_hours.
+    """
+    required = {"subject_id", "stay_id", "intime", "outtime"}
+    missing = required - set(stays.columns)
+    if missing:
+        raise ValueError(f"Missing stay columns: {sorted(missing)}")
+    metadata = stays[["subject_id", "stay_id", "intime", "outtime"]].drop_duplicates("stay_id").copy()
+    metadata = metadata[metadata["stay_id"].isin(set(usable_stay_ids))]
+    metadata["duration_hours"] = (
+        pd.to_datetime(metadata["outtime"]) - pd.to_datetime(metadata["intime"])
+    ).dt.total_seconds() / 3600.0
+    metadata = metadata[
+        metadata["duration_hours"].notna() & (metadata["duration_hours"] > 0)
+    ]
+
+    rows = []
+    for row in metadata.itertuples(index=False):
+        n_hours = min(int(window_hours), int(np.ceil(row.duration_hours)))
+        for hour in range(n_hours):
+            # Defensive condition for floating-point/duration boundary cases.
+            if hour < row.duration_hours:
+                rows.append(
+                    {
+                        "subject_id": row.subject_id,
+                        "stay_id": row.stay_id,
+                        "hour": hour,
+                    }
+                )
+    return pd.DataFrame(rows, columns=["subject_id", "stay_id", "hour"])
+
+
+def causal_impute_features(frame, train_mask, features=FEATURES):
+    """Impute without looking forward in time; fit fallback medians on train only.
+
+    Per-feature missingness indicators capture whether a measurement was absent
+    before imputation. Forward-fill limits are expressed in hourly bins.
+    """
+    result = frame.copy()
+    for feature in features:
+        missing_column = f"{feature}_was_missing"
+        result[missing_column] = result[feature].isna().astype(int)
+        limit = MAX_FORWARD_FILL_HOURS.get(feature, 6)
+        result[feature] = result.groupby("stay_id", sort=False)[feature].ffill(limit=limit)
+
+    train_medians = result.loc[train_mask, list(features)].median()
+    if train_medians.isna().any():
+        missing_features = train_medians[train_medians.isna()].index.tolist()
+        raise ValueError(
+            "Training data has no usable observations for features: "
+            f"{missing_features}. Cannot fit fallback medians."
+        )
+    result.loc[:, list(features)] = result.loc[:, list(features)].fillna(train_medians)
+    if result[list(features)].isna().any().any():
+        raise ValueError("Missing feature values remain after causal imputation.")
+    return result, train_medians
+
+
+def summarize_feature_quality(frame, features=FEATURES):
+    """Summarize raw observed values without silently clipping or deleting them."""
+    summary = {}
+    for feature in features:
+        values = pd.to_numeric(frame[feature], errors="coerce")
+        low, high = FEATURE_REVIEW_BOUNDS[feature]
+        observed = values.dropna()
+        summary[feature] = {
+            "expected_unit_note": FEATURE_UNITS[feature],
+            "observed_count": int(observed.size),
+            "missing_count_before_imputation": int(values.isna().sum()),
+            "missing_fraction_before_imputation": float(values.isna().mean()),
+            "minimum": float(observed.min()) if len(observed) else None,
+            "maximum": float(observed.max()) if len(observed) else None,
+            "nonpositive_count": int((observed <= 0).sum()),
+            "outside_broad_review_bounds_count": int(((observed < low) | (observed > high)).sum()),
+            "broad_review_bounds": [low, high],
+        }
+    return summary
+
+
 def parse_mimic_data():
-    """Build patient-aware 48-hour trajectories with train-only preprocessing statistics.
+    """Build patient-aware, at-most-48-hour trajectories with causal preprocessing.
 
     ICU stays, rather than individual hourly rows, are randomly assigned to
     train/validation/test. Missing-value medians and StandardScaler statistics
@@ -111,6 +208,11 @@ def parse_mimic_data():
     all_events = all_events.merge(
         stays[["stay_id", "intime", "outtime"]], on="stay_id", how="inner"
     )
+    # Exclude events outside the documented ICU stay interval.
+    all_events = all_events.loc[
+        (all_events["charttime"] >= all_events["intime"])
+        & (all_events["charttime"] <= all_events["outtime"])
+    ].copy()
 
     all_events["hour"] = (
         (all_events["charttime"] - all_events["intime"]).dt.total_seconds() // 3600
@@ -138,13 +240,12 @@ def parse_mimic_data():
     )
 
     usable_stays = pivot["stay_id"].drop_duplicates()
-    full_index = pd.MultiIndex.from_product(
-        [usable_stays.tolist(), range(WINDOW_HOURS)],
-        names=["stay_id", "hour"],
-    ).to_frame(index=False)
-    stay_subject = stays[["stay_id", "subject_id"]].drop_duplicates("stay_id")
-    full_index = full_index.merge(stay_subject, on="stay_id", how="left")
-    pivot = full_index.merge(pivot, on=["stay_id", "hour"], how="left")
+    # Unlike a fixed 48-hour Cartesian product, this index stops at each stay's
+    # real outtime and never invents hours after discharge/transfer.
+    full_index = build_observation_index(stays, usable_stays, WINDOW_HOURS)
+    if full_index.empty:
+        raise ValueError("No valid hourly observation windows were found.")
+    pivot = full_index.merge(pivot, on=["stay_id", "hour"], how="left", validate="one_to_one")
     pivot = pivot.sort_values(["subject_id", "stay_id", "hour"]).reset_index(drop=True)
 
     # Patient-level split: every ICU stay from the same subject remains in
@@ -171,20 +272,15 @@ def parse_mimic_data():
     if pivot["split"].isna().any():
         raise RuntimeError("Some ICU stays were not assigned to a data split.")
 
-    print("5. Imputing missing values using training-only statistics...")
-    pivot[FEATURES] = pivot.groupby("stay_id")[FEATURES].transform(
-        lambda group: group.ffill().bfill()
-    )
-
-    # Fit fallback medians on training stays only.
+    print("5. Imputing missing values using causal forward-fill and training-only medians...")
+    raw_feature_quality = summarize_feature_quality(pivot, FEATURES)
     train_mask = pivot["split"] == "train"
-    train_medians = pivot.loc[train_mask, FEATURES].median()
-    pivot[FEATURES] = pivot[FEATURES].fillna(train_medians)
+    pivot, train_medians = causal_impute_features(pivot, train_mask, FEATURES)
 
-    if pivot[FEATURES].isna().any().any():
-        raise ValueError("Missing feature values remain after train-only imputation.")
-
-    index_df = pivot[["subject_id", "stay_id", "hour", "split"] + FEATURES].copy()
+    missingness_columns = [f"{feature}_was_missing" for feature in FEATURES]
+    index_df = pivot[
+        ["subject_id", "stay_id", "hour", "split"] + FEATURES + missingness_columns
+    ].copy()
 
     print("6. Scaling features using training stays only...")
     scaler = StandardScaler()
@@ -208,8 +304,14 @@ def parse_mimic_data():
 
     preprocessing = {
         "features": FEATURES,
-        "window_hours": WINDOW_HOURS,
+        "window_hours_max": WINDOW_HOURS,
+        "window_definition": "hour bins whose start time is before min(outtime, intime + window_hours)",
         "random_seed": RANDOM_SEED,
+        "imputation_method": "within-stay forward-fill only, with per-feature maximum carry-forward, then training-split median fallback",
+        "max_forward_fill_hours": MAX_FORWARD_FILL_HOURS,
+        "missingness_indicator_columns": missingness_columns,
+        "feature_units_review_notes": FEATURE_UNITS,
+        "feature_review_bounds": FEATURE_REVIEW_BOUNDS,
         "split_fractions": {
             "train": TRAIN_FRACTION,
             "validation": VAL_FRACTION,
@@ -223,6 +325,23 @@ def parse_mimic_data():
     with open(PROCESSED_DIR / "preprocessing.json", "w", encoding="utf-8") as f:
         json.dump(preprocessing, f, indent=2)
 
+    data_quality_report = {
+        "purpose": "Data-quality summary for review; unusual values are flagged, not automatically deleted.",
+        "feature_quality_before_imputation": raw_feature_quality,
+        "feature_quality_after_imputation": summarize_feature_quality(pivot, FEATURES),
+        "missingness_indicators": {
+            feature: int(index_df[f"{feature}_was_missing"].sum())
+            for feature in FEATURES
+        },
+        "notes": [
+            "Confirm units against source item metadata before interpreting ranges.",
+            "Broad review bounds are screening flags, not clinical exclusion rules.",
+            "The three-feature set is a prototype scope and is not comprehensive ICU severity assessment.",
+        ],
+    }
+    with open(PROCESSED_DIR / "data_quality_report.json", "w", encoding="utf-8") as f:
+        json.dump(data_quality_report, f, indent=2)
+
     print(
         f"Success! Extracted {len(index_df):,} hourly records across "
         f"{index_df['stay_id'].nunique():,} ICU stays."
@@ -232,6 +351,7 @@ def parse_mimic_data():
     print(f"\nSaved tensor: {PROCESSED_DIR / 'mimic_tensor.pt'}")
     print(f"Saved trajectory index: {PROCESSED_DIR / 'mimic_index.csv'}")
     print(f"Saved preprocessing metadata: {PROCESSED_DIR / 'preprocessing.json'}")
+    print(f"Saved data-quality report: {PROCESSED_DIR / 'data_quality_report.json'}")
 
     return tensor_data
 
