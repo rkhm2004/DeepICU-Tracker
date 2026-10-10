@@ -27,7 +27,11 @@ def vae_loss_function(recon_x, x, mu, logvar):
 
 
 def latent_to_state(mu_values, cutoffs):
-    """Map higher latent scores to safer states and lower scores to higher risk."""
+    """Apply the implementation's latent-bin ordering, not a clinical risk rule.
+
+    Higher latent scores map to lower-numbered states by convention. This
+    orientation and the resulting labels require independent outcome validation.
+    """
     raw_bins = np.digitize(mu_values, cutoffs)
     return 3 - raw_bins
 
@@ -215,6 +219,12 @@ def train_vae(
         "state_names": STATE_NAMES,
         "cutoffs": cutoffs.tolist(),
         "mapping": "state = 3 - digitize(mu, cutoffs)",
+        "state_semantics": "model-defined latent bins; not clinically validated severity categories",
+        "clinical_outcome_validation": "not performed",
+        "interpretation_warning": (
+            "VAE reconstruction and latent bins do not establish clinical risk. "
+            "Validate state direction and cutoffs against independent clinical outcomes before clinical claims."
+        ),
         "cutoffs_fit_on_split": "train",
         "seed": RANDOM_SEED,
         "latent_dimension": 1,
