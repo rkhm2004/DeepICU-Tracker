@@ -361,15 +361,43 @@ def check_data_artifacts() -> None:
     else:
         report("SKIP", "13. BN evaluation", "bn_evaluation.json not found or invalid.")
 
+    quality = read_json("data/processed/data_quality_report.json")
+    if quality is None:
+        report("SKIP", "10. Data quality report", "data_quality_report.json not found or invalid.")
+    elif not {"feature_quality_before_imputation", "feature_quality_after_imputation", "missingness_indicators"}.issubset(quality):
+        report("FAIL", "10. Data quality report", "Quality report is missing required raw-missingness or post-imputation summaries.")
+    else:
+        report("PASS", "10. Data quality report", "Raw missingness, post-imputation ranges and missingness-indicator counts are present.")
+
     evaluation = read_json("results/evaluation_report.json")
     if evaluation is None:
         report("SKIP", "9. Prognosis sample size", "evaluation_report.json not found or invalid.")
     else:
-        text = json.dumps(evaluation).lower()
-        if "26" in text and "11" in text:
-            report("WARN", "9. Prognosis sample size", "Report may contain the previously observed 26-record/11-stay diagnostic; confirm current counts and keep conclusions preliminary.")
+        prognosis = evaluation.get("test_prognosis_comparison", {})
+        required_prognosis = {
+            "uncensored_records", "uncensored_stays", "total_test_stays",
+            "uncensored_patients", "total_test_patients", "censored_stays",
+            "censoring_note", "interpretation_note",
+        }
+        if not required_prognosis.issubset(prognosis):
+            report("WARN", "9. Prognosis sample size", "Prognosis report does not yet contain complete event/censoring counts; re-run src/evaluation.py.")
+        elif (
+            int(prognosis.get("uncensored_records", 0)) < 30
+            or int(prognosis.get("uncensored_stays", 0)) < 10
+        ):
+            report(
+                "WARN",
+                "9. Prognosis sample size",
+                "Censoring counts are reported, but the uncensored subset is small "
+                f"({prognosis.get('uncensored_records')} records, {prognosis.get('uncensored_stays')} stays, "
+                f"{prognosis.get('uncensored_patients')} patients). This remains an exploratory diagnostic, not a code defect.",
+            )
         else:
-            report("WARN", "9. Prognosis sample size", "Inspect the evaluation report for usable records, independent stays/patients, censoring and uncertainty; this audit does not infer clinical validity from JSON alone.")
+            report(
+                "WARN",
+                "9. Prognosis validation",
+                "Sample counts and censoring are reported, but clinical time-to-event validity still requires a prespecified endpoint and independent censoring-aware validation.",
+            )
 
     expected_outputs = [
         "data/processed/mimic_tensor.pt",
