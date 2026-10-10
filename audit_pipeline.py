@@ -501,6 +501,7 @@ def run_unit_tests() -> None:
     test_modules = [
         "tests/test_mathematical_pipeline.py",
         "tests/test_bayesian_network.py",
+        "tests/test_clinical_validation.py",
     ]
     existing = [p for p in test_modules if (ROOT / p).exists()]
     missing = [p for p in test_modules if not (ROOT / p).exists()]
