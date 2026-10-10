@@ -377,7 +377,20 @@ def check_data_artifacts() -> None:
     elif not {"feature_quality_before_imputation", "feature_quality_after_imputation", "missingness_indicators"}.issubset(quality):
         report("FAIL", "10. Data quality report", "Quality report is missing required raw-missingness or post-imputation summaries.")
     else:
-        report("PASS", "10. Data quality report", "Raw missingness, post-imputation ranges and missingness-indicator counts are present.")
+        flagged = {
+            feature: details.get("outside_broad_review_bounds_count", 0)
+            for feature, details in quality["feature_quality_before_imputation"].items()
+            if details.get("outside_broad_review_bounds_count", 0) > 0
+        }
+        if flagged:
+            report(
+                "WARN",
+                "10. Data quality report",
+                "Raw values outside broad review bounds require source/unit review (not automatic deletion): "
+                + json.dumps(flagged),
+            )
+        else:
+            report("PASS", "10. Data quality report", "Raw missingness, post-imputation ranges and missingness-indicator counts are present; no broad-bound flags were raised.")
 
     evaluation = read_json("results/evaluation_report.json")
     if evaluation is None:
