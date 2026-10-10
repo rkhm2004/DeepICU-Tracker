@@ -264,3 +264,24 @@ python audit_pipeline.py
 ## 10. Final Note
 
 DeepICU-Tracker is a mathematical/software research prototype. It is not certified and is not clinically validated or intended for bedside decisions. Its current contribution is a reproducible pipeline with leakage-aware preprocessing, stochastic-process modelling, numerical checks and transparent surrogate-label evaluation. Independent clinical outcome validation remains future work.
+
+## 8. Independent Clinical Outcome and Prognosis Validation
+
+After regenerating the parser, VAE, and CTMC artifacts, run:
+
+```powershell
+python src/clinical_validation.py
+python -m unittest tests/test_clinical_validation.py
+```
+
+The script creates:
+
+- `results/wbc_outlier_trace.csv`: raw WBC lab values above the broad review threshold, including source timestamps, units, reference ranges/flags when available, ICU stay linkage, and the matching processed hourly value. Inspect this file to determine whether the WBC value of 116.1 is supported by the original record and what unit was recorded. The code flags values; it does not automatically remove them or claim clinical plausibility.
+- `results/clinical_validation_report.json`: evaluation of the first-hour VAE state against the independent MIMIC in-hospital mortality field, including outcome counts, mortality rates by model-defined state, and score AUCs in both latent-score orientations.
+- `results/bn_hospital_mortality_predictions.csv`: predictions from a separate outcome-targeted discrete BN, `P(hospital mortality | HR bin, SBP bin, WBC bin)`, trained only on one baseline record per training subject and evaluated on baseline records from test subjects.
+- `results/prognosis_survival_curve.csv`: Kaplan-Meier survival estimates for time to the first model-defined Critical state, compared with Phase-Type survival predictions, retaining right-censored test trajectories.
+
+**Important interpretation limits:** the outcome endpoint is in-hospital mortality, not a comprehensive measure of deterioration. The demo dataset and held-out test cohort are small, so AUC may be undefined if the test split contains only one outcome class. The VAE state names/cutoffs are still model-defined; mortality-rate patterns can provide evidence about their direction but do not by themselves validate calibrated clinical severity categories. The survival analysis is censoring-aware for time to the model-defined Critical state, not a clinical endpoint, because the event is generated from the VAE itself. Do not use these results for patient-care decisions.
+
+The original BN in `src/bayesian_net/train_infer.py` continues to predict VAE surrogate labels. Its agreement metrics must not be described as clinical accuracy; the separate mortality-targeted BN above is the independent-outcome experiment.
+
