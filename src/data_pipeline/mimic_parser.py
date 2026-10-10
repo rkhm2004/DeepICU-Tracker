@@ -238,6 +238,11 @@ def parse_mimic_data():
         )
         .reset_index()
     )
+    # Ensure absent feature columns fail with a clear training-median error,
+    # rather than an opaque KeyError during data-quality reporting.
+    for feature in FEATURES:
+        if feature not in pivot.columns:
+            pivot[feature] = np.nan
 
     usable_stays = pivot["stay_id"].drop_duplicates()
     # Unlike a fixed 48-hour Cartesian product, this index stops at each stay's
@@ -328,7 +333,14 @@ def parse_mimic_data():
     data_quality_report = {
         "purpose": "Data-quality summary for review; unusual values are flagged, not automatically deleted.",
         "feature_quality_before_imputation": raw_feature_quality,
-        "feature_quality_after_imputation": summarize_feature_quality(pivot, FEATURES),
+        "feature_quality_after_imputation": {
+            feature: {
+                "minimum": float(pivot[feature].min()),
+                "maximum": float(pivot[feature].max()),
+                "missing_count_after_imputation": int(pivot[feature].isna().sum()),
+            }
+            for feature in FEATURES
+        },
         "missingness_indicators": {
             feature: int(index_df[f"{feature}_was_missing"].sum())
             for feature in FEATURES
