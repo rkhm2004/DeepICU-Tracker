@@ -36,7 +36,7 @@ def generate_three_plots():
     for cutoff in metadata["cutoffs"]:
         plt.axvline(cutoff, linestyle="--", linewidth=2)
 
-    plt.title("VAE Latent Risk Score (mu) and CTMC State Cutoffs")
+    plt.title("VAE Latent Score Cutoffs for Model-Defined States")
     plt.xlabel("VAE latent risk score (mu)")
     plt.ylabel("Patient-hour observations")
     plt.legend()
@@ -57,7 +57,7 @@ def generate_three_plots():
                 label=state,
             )
 
-    plt.title("Clinical Vitals Mapped to CTMC Risk States")
+    plt.title("Physiological Features vs Model-Defined States")
     plt.xlabel("Heart Rate (BPM)")
     plt.ylabel("Systolic Blood Pressure (mmHg)")
     plt.legend()
