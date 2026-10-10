@@ -154,6 +154,10 @@ class TestPhaseType(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_transient_generator(invalid)
 
+    def test_mgf_rejects_values_outside_its_convergence_domain(self):
+        with self.assertRaises(ValueError):
+            phase_type_mgf(1e6, 0, self.T)
+
 
 
 class TestDataSplitting(unittest.TestCase):
