@@ -42,6 +42,17 @@ class TestBayesianNetwork(unittest.TestCase):
         self.assertEqual(probs.shape, (len(self.train), 4))
         self.assertTrue(np.allclose(probs.sum(axis=1), 1.0))
 
+    def test_invalid_laplace_alpha_is_rejected(self):
+        with self.assertRaises(ValueError):
+            fit_bayesian_network(self.train, self.cutoffs, alpha=0.0)
+
+    def test_nonfinite_inference_feature_is_rejected(self):
+        cpt, _ = fit_bayesian_network(self.train, self.cutoffs)
+        broken = self.train.copy()
+        broken.loc[0, "heart_rate"] = np.inf
+        with self.assertRaises(ValueError):
+            infer_risk_probabilities(broken, self.cutoffs, cpt)
+
     def test_classification_metrics_include_all_states(self):
         y_true = np.array([0, 1, 2, 3, 3])
         y_pred = np.array([0, 1, 1, 2, 3])
