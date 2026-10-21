@@ -19,11 +19,21 @@ DEFAULT_LEARNING_RATE = 1e-3
 DEFAULT_PATIENCE = 10
 
 
-def vae_loss_function(recon_x, x, mu, logvar):
-    """VAE objective = reconstruction error + KL divergence."""
-    recon_loss = nn.functional.mse_loss(recon_x, x, reduction="sum")
+def vae_loss_function(recon_x, x, mu, logvar, observed_mask=None, beta=1.0):
+    """VAE objective with reconstruction targets limited to originally observed features.
+
+    Inputs remain the causally imputed tensor. Missing values do not count as
+    ground-truth reconstruction targets; KL regularization is retained.
+    """
+    if observed_mask is None:
+        recon_loss = nn.functional.mse_loss(recon_x, x, reduction="sum")
+    else:
+        mask = observed_mask.to(dtype=x.dtype)
+        if mask.shape != x.shape:
+            raise ValueError("observed_mask must have the same shape as x.")
+        recon_loss = (((recon_x - x) ** 2) * mask).sum()
     kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-    return recon_loss + kld_loss
+    return recon_loss + beta * kld_loss
 
 
 def latent_to_state(mu_values, cutoffs):
@@ -36,24 +46,36 @@ def latent_to_state(mu_values, cutoffs):
     return 3 - raw_bins
 
 
-def _mean_loss(model, data):
-    """Deterministic validation loss: decode posterior mean instead of sampling z.
+def _observed_mask(index_frame, features):
+    """Build true-observation mask from pre-imputation missingness indicators."""
+    columns = [f"{feature}_was_missing" for feature in features]
+    missing = [column for column in columns if column not in index_frame.columns]
+    if missing:
+        raise ValueError(
+            "Masked VAE training requires original missingness indicators in mimic_index.csv: "
+            + ", ".join(missing)
+        )
+    return torch.tensor(
+        1.0 - index_frame[columns].to_numpy(dtype=np.float32),
+        dtype=torch.float32,
+    )
 
-    Training remains stochastic, as required for a VAE. Validation/test metrics
-    use z=mu so the same checkpoint and split produce reproducible losses and
-    early stopping is not driven by Monte Carlo noise.
-    """
+
+def _mean_loss(model, data, observed_mask):
+    """Deterministic masked VAE loss; only observed values are reconstruction targets."""
     if len(data) == 0:
         raise ValueError("Cannot evaluate VAE loss on an empty split.")
-
     model.eval()
     total_loss = 0.0
     with torch.no_grad():
         for start in range(0, len(data), 1024):
             batch = data[start:start + 1024]
+            mask = observed_mask[start:start + 1024]
             mu, logvar = model.encode(batch)
             recon_x = model.decode(mu)
-            total_loss += vae_loss_function(recon_x, batch, mu, logvar).item()
+            total_loss += vae_loss_function(
+                recon_x, batch, mu, logvar, observed_mask=mask
+            ).item()
     return total_loss / len(data)
 
 
@@ -108,6 +130,22 @@ def train_vae(
     train_data = data[train_mask]
     val_data = data[val_mask]
     test_data = data[test_mask]
+    features = ["heart_rate", "sbp", "wbc"] if data.shape[1] == 3 else [
+        f"feature_{i}" for i in range(data.shape[1])
+    ]
+    all_observed_mask = _observed_mask(index_df, features)
+    train_observed_mask = all_observed_mask[train_mask]
+    val_observed_mask = all_observed_mask[val_mask]
+    test_observed_mask = all_observed_mask[test_mask]
+    observed_counts = {
+        "train": train_observed_mask.sum(dim=0).int().tolist(),
+        "validation": val_observed_mask.sum(dim=0).int().tolist(),
+        "test": test_observed_mask.sum(dim=0).int().tolist(),
+    }
+    print("   Masked reconstruction targets (observed values only):")
+    print(f"   Train feature counts: {dict(zip(features, observed_counts['train']))}")
+    print(f"   Validation feature counts: {dict(zip(features, observed_counts['validation']))}")
+    print(f"   Test feature counts (reporting only): {dict(zip(features, observed_counts['test']))}")
 
     if len(train_data) == 0 or len(val_data) == 0 or len(test_data) == 0:
         raise ValueError("Train, validation, and test splits must all contain records.")
@@ -126,7 +164,7 @@ def train_vae(
     )
 
     train_loader = DataLoader(
-        TensorDataset(train_data),
+        TensorDataset(train_data, train_observed_mask),
         batch_size=batch_size,
         shuffle=True,
         generator=torch.Generator().manual_seed(RANDOM_SEED),
@@ -145,17 +183,17 @@ def train_vae(
         model.train()
         train_total = 0.0
 
-        for (x,) in train_loader:
+        for x, observed_mask in train_loader:
             optimizer.zero_grad()
             recon_x, mu, logvar = model(x)
-            loss = vae_loss_function(recon_x, x, mu, logvar)
+            loss = vae_loss_function(recon_x, x, mu, logvar, observed_mask=observed_mask)
             loss.backward()
             optimizer.step()
             train_total += loss.item()
 
         # Compare train and validation using the same deterministic metric.
-        train_loss = _mean_loss(model, train_data)
-        val_loss = _mean_loss(model, val_data)
+        train_loss = _mean_loss(model, train_data, train_observed_mask)
+        val_loss = _mean_loss(model, val_data, val_observed_mask)
         history.append(
             {
                 "epoch": epoch,
@@ -189,8 +227,8 @@ def train_vae(
         raise RuntimeError("No validation checkpoint was produced.")
 
     model.load_state_dict(best_state)
-    test_loss = _mean_loss(model, test_data)
-    train_loss_at_best = _mean_loss(model, train_data)
+    test_loss = _mean_loss(model, test_data, test_observed_mask)
+    train_loss_at_best = _mean_loss(model, train_data, train_observed_mask)
 
     checkpoint_path = Path("src/vae/vae_checkpoint.pt")
     torch.save(model.state_dict(), checkpoint_path)
@@ -200,9 +238,7 @@ def train_vae(
         "validation": _feature_mse(model, val_data),
         "test": _feature_mse(model, test_data),
     }
-    feature_names = ["heart_rate", "sbp", "wbc"] if data.shape[1] == 3 else [
-        f"feature_{i}" for i in range(data.shape[1])
-    ]
+    feature_names = features
     feature_gap_diagnostics = {}
     for feature_index, feature_name in enumerate(feature_names):
         train_mse = float(split_feature_mse["train"][feature_index])
@@ -218,6 +254,11 @@ def train_vae(
 
     metrics = {
         "evaluation_reconstruction": "deterministic decoder(mu), no latent sampling for validation/test metrics",
+        "reconstruction_objective": "masked MSE on originally observed features only plus KL divergence; imputed values are encoder inputs but not reconstruction targets",
+        "observed_target_counts_by_split": {
+            split_name: dict(zip(features, counts))
+            for split_name, counts in observed_counts.items()
+        },
         "feature_order": ["heart_rate", "sbp", "wbc"] if data.shape[1] == 3 else list(range(data.shape[1])),
         "per_feature_reconstruction_mse_by_split": split_feature_mse,
         "per_feature_generalization_gap": feature_gap_diagnostics,
