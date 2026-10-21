@@ -37,7 +37,12 @@ def latent_to_state(mu_values, cutoffs):
 
 
 def _mean_loss(model, data):
-    """Average VAE loss per record for a fixed dataset."""
+    """Deterministic validation loss: decode posterior mean instead of sampling z.
+
+    Training remains stochastic, as required for a VAE. Validation/test metrics
+    use z=mu so the same checkpoint and split produce reproducible losses and
+    early stopping is not driven by Monte Carlo noise.
+    """
     if len(data) == 0:
         raise ValueError("Cannot evaluate VAE loss on an empty split.")
 
@@ -46,9 +51,23 @@ def _mean_loss(model, data):
     with torch.no_grad():
         for start in range(0, len(data), 1024):
             batch = data[start:start + 1024]
-            recon_x, mu, logvar = model(batch)
+            mu, logvar = model.encode(batch)
+            recon_x = model.decode(mu)
             total_loss += vae_loss_function(recon_x, batch, mu, logvar).item()
     return total_loss / len(data)
+
+
+def _feature_mse(model, data):
+    """Per-feature deterministic reconstruction MSE, useful for diagnosing shift."""
+    model.eval()
+    squared_error = torch.zeros(data.shape[1], dtype=torch.float64)
+    with torch.no_grad():
+        for start in range(0, len(data), 1024):
+            batch = data[start:start + 1024]
+            mu, _ = model.encode(batch)
+            recon = model.decode(mu)
+            squared_error += ((recon - batch) ** 2).sum(dim=0).double()
+    return (squared_error / len(data)).tolist()
 
 
 def train_vae(
@@ -175,7 +194,16 @@ def train_vae(
     checkpoint_path = Path("src/vae/vae_checkpoint.pt")
     torch.save(model.state_dict(), checkpoint_path)
 
+    split_feature_mse = {
+        "train": _feature_mse(model, train_data),
+        "validation": _feature_mse(model, val_data),
+        "test": _feature_mse(model, test_data),
+    }
+
     metrics = {
+        "evaluation_reconstruction": "deterministic decoder(mu), no latent sampling for validation/test metrics",
+        "feature_order": list(range(data.shape[1])),
+        "per_feature_reconstruction_mse_by_split": split_feature_mse,
         "seed": RANDOM_SEED,
         "epochs_requested": epochs,
         "epochs_trained": len(history),
