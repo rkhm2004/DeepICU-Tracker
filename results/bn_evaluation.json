@@ -1,0 +1,111 @@
+{
+  "network": "HeartRateLevel, SBPLevel, WBCLevel -> RiskState",
+  "features": [
+    "heart_rate",
+    "sbp",
+    "wbc"
+  ],
+  "training_records": 3560,
+  "test_records": 936,
+  "training_patients": 70,
+  "test_patients": 15,
+  "discretization_cutoffs_fit_on": "train",
+  "cpt_fit_on": "train",
+  "laplace_alpha": 1.0,
+  "cutoffs": {
+    "heart_rate": [
+      82.0,
+      99.0
+    ],
+    "sbp": [
+      110.0,
+      111.0
+    ],
+    "wbc": [
+      9.9,
+      12.5
+    ]
+  },
+  "cpt_shape": [
+    3,
+    3,
+    3,
+    4
+  ],
+  "test_accuracy_against_vae_states": 0.4049145299145299,
+  "labels_order": [
+    "Low Risk",
+    "Medium Risk",
+    "High Risk",
+    "Critical"
+  ],
+  "confusion_matrix": [
+    [
+      88,
+      14,
+      0,
+      0
+    ],
+    [
+      33,
+      51,
+      0,
+      0
+    ],
+    [
+      6,
+      60,
+      38,
+      57
+    ],
+    [
+      26,
+      237,
+      124,
+      202
+    ]
+  ],
+  "support_by_class": {
+    "Low Risk": 102,
+    "Medium Risk": 84,
+    "High Risk": 161,
+    "Critical": 589
+  },
+  "predicted_count_by_class": {
+    "Low Risk": 153,
+    "Medium Risk": 362,
+    "High Risk": 162,
+    "Critical": 259
+  },
+  "per_class_precision": {
+    "Low Risk": 0.5751633986928104,
+    "Medium Risk": 0.1408839779005525,
+    "High Risk": 0.2345679012345679,
+    "Critical": 0.7799227799227799
+  },
+  "per_class_recall": {
+    "Low Risk": 0.8627450980392157,
+    "Medium Risk": 0.6071428571428571,
+    "High Risk": 0.2360248447204969,
+    "Critical": 0.34295415959252973
+  },
+  "per_class_f1": {
+    "Low Risk": 0.6901960784313725,
+    "Medium Risk": 0.22869955156950672,
+    "High Risk": 0.23529411764705882,
+    "Critical": 0.47641509433962265
+  },
+  "accuracy": 0.4049145299145299,
+  "macro_precision": 0.4326345144376777,
+  "macro_recall": 0.5122167398737749,
+  "macro_f1": 0.4076512104968902,
+  "balanced_accuracy": 0.5122167398737749,
+  "balanced_accuracy_classes_present": [
+    "Low Risk",
+    "Medium Risk",
+    "High Risk",
+    "Critical"
+  ],
+  "metric_target": "agreement with VAE-derived risk-state labels; not clinical outcome accuracy",
+  "interpretation_warning": "This is a proof-of-concept BN trained to explain/reproduce VAE-derived risk states from the same physiological features, not an independent clinical outcome predictor or causal explanation. Test accuracy is agreement with VAE state labels, not clinical accuracy."
+}

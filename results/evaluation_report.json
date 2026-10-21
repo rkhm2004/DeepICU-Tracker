@@ -1,0 +1,406 @@
+{
+  "split_integrity": {
+    "subject_overlap": {
+      "train_vs_validation": [],
+      "train_vs_test": [],
+      "validation_vs_test": []
+    },
+    "all_subjects_exclusive": true,
+    "records": {
+      "train": 3560,
+      "validation": 887,
+      "test": 936
+    },
+    "patients": {
+      "train": 70,
+      "validation": 15,
+      "test": 15
+    },
+    "icu_stays": {
+      "train": 95,
+      "validation": 23,
+      "test": 22
+    }
+  },
+  "preprocessing": {
+    "fit_on_split": "train",
+    "features": [
+      "heart_rate",
+      "sbp",
+      "wbc"
+    ],
+    "imputation_method": "within-stay forward-fill only, with per-feature maximum carry-forward, then training-split median fallback",
+    "max_forward_fill_hours": {
+      "heart_rate": 6,
+      "sbp": 6,
+      "wbc": 24
+    },
+    "missingness_indicator_columns": [
+      "heart_rate_was_missing",
+      "sbp_was_missing",
+      "wbc_was_missing"
+    ],
+    "scaler_mean": [
+      91.0429186450254,
+      111.31263588939152,
+      11.931783707865169
+    ],
+    "scaler_scale": [
+      18.786967411241204,
+      14.99486303527258,
+      5.385523697669664
+    ],
+    "data_quality_report_available": true
+  },
+  "state_semantics": {
+    "meaning": "model-defined VAE latent bins, not clinically validated severity categories",
+    "latent_score_direction": "lower latent scores map to higher-numbered risk states by implementation convention; clinical direction is unvalidated",
+    "critical_absorbing": "Critical is absorbing in CTMC prognosis; per-hour VAE labels are independently assigned and can later change"
+  },
+  "feature_scope_note": "Only heart rate, systolic blood pressure and WBC are used. This is not a comprehensive ICU severity assessment.",
+  "data_quality": {
+    "purpose": "Data-quality summary for review; unusual values are flagged, not automatically deleted.",
+    "feature_quality_before_imputation": {
+      "heart_rate": {
+        "expected_unit_note": "beats/minute (verify source item/unit metadata)",
+        "observed_count": 5110,
+        "missing_count_before_imputation": 273,
+        "missing_fraction_before_imputation": 0.05071521456436931,
+        "minimum": 29.0,
+        "maximum": 160.0,
+        "nonpositive_count": 0,
+        "outside_broad_review_bounds_count": 0,
+        "broad_review_bounds": [
+          20.0,
+          250.0
+        ]
+      },
+      "sbp": {
+        "expected_unit_note": "mmHg (verify source item/unit metadata)",
+        "observed_count": 3418,
+        "missing_count_before_imputation": 1965,
+        "missing_fraction_before_imputation": 0.3650380828534275,
+        "minimum": 58.0,
+        "maximum": 200.5,
+        "nonpositive_count": 0,
+        "outside_broad_review_bounds_count": 0,
+        "broad_review_bounds": [
+          30.0,
+          300.0
+        ]
+      },
+      "wbc": {
+        "expected_unit_note": "typically 10^9/L or K/uL; verify source unit metadata",
+        "observed_count": 439,
+        "missing_count_before_imputation": 4944,
+        "missing_fraction_before_imputation": 0.9184469626602266,
+        "minimum": 0.3,
+        "maximum": 116.1,
+        "nonpositive_count": 0,
+        "outside_broad_review_bounds_count": 1,
+        "broad_review_bounds": [
+          0.1,
+          100.0
+        ]
+      }
+    },
+    "feature_quality_after_imputation": {
+      "heart_rate": {
+        "minimum": 29.0,
+        "maximum": 160.0,
+        "missing_count_after_imputation": 0
+      },
+      "sbp": {
+        "minimum": 58.0,
+        "maximum": 200.5,
+        "missing_count_after_imputation": 0
+      },
+      "wbc": {
+        "minimum": 0.3,
+        "maximum": 116.1,
+        "missing_count_after_imputation": 0
+      }
+    },
+    "missingness_indicators": {
+      "heart_rate": 273,
+      "sbp": 1965,
+      "wbc": 4944
+    },
+    "notes": [
+      "Confirm units against source item metadata before interpreting ranges.",
+      "Broad review bounds are screening flags, not clinical exclusion rules.",
+      "The three-feature set is a prototype scope and is not comprehensive ICU severity assessment."
+    ]
+  },
+  "vae": {
+    "cutoffs": [
+      -0.1735621839761734,
+      0.07758353278040886,
+      0.2723689079284668
+    ],
+    "cutoffs_fit_on_split": "train",
+    "metrics_by_split": {
+      "train": {
+        "records": 3560,
+        "loss_per_record": 2.93828598193908,
+        "reconstruction_mse_per_record": 2.817796582854196,
+        "kl_per_record": 0.12048939694179578,
+        "patients": 70,
+        "icu_stays": 95
+      },
+      "validation": {
+        "records": 887,
+        "loss_per_record": 23.2693286710823,
+        "reconstruction_mse_per_record": 22.761199091037206,
+        "kl_per_record": 0.5081290639642932,
+        "patients": 15,
+        "icu_stays": 23
+      },
+      "test": {
+        "records": 936,
+        "loss_per_record": 7.304505959535256,
+        "reconstruction_mse_per_record": 6.818970769898504,
+        "kl_per_record": 0.48553532005375266,
+        "patients": 15,
+        "icu_stays": 22
+      }
+    }
+  },
+  "state_distribution": {
+    "train": {
+      "Low Risk": {
+        "records": 890,
+        "fraction": 0.25
+      },
+      "Medium Risk": {
+        "records": 890,
+        "fraction": 0.25
+      },
+      "High Risk": {
+        "records": 890,
+        "fraction": 0.25
+      },
+      "Critical": {
+        "records": 890,
+        "fraction": 0.25
+      }
+    },
+    "validation": {
+      "Low Risk": {
+        "records": 208,
+        "fraction": 0.23449830890642615
+      },
+      "Medium Risk": {
+        "records": 169,
+        "fraction": 0.19052987598647125
+      },
+      "High Risk": {
+        "records": 132,
+        "fraction": 0.1488162344983089
+      },
+      "Critical": {
+        "records": 378,
+        "fraction": 0.42615558060879366
+      }
+    },
+    "test": {
+      "Low Risk": {
+        "records": 102,
+        "fraction": 0.10897435897435898
+      },
+      "Medium Risk": {
+        "records": 84,
+        "fraction": 0.08974358974358974
+      },
+      "High Risk": {
+        "records": 161,
+        "fraction": 0.172008547008547
+      },
+      "Critical": {
+        "records": 589,
+        "fraction": 0.6292735042735043
+      }
+    }
+  },
+  "ctmc_training": {
+    "records": 3560,
+    "icu_stays": 95,
+    "transition_counts": [
+      [
+        0,
+        54,
+        13,
+        6
+      ],
+      [
+        52,
+        0,
+        52,
+        18
+      ],
+      [
+        7,
+        43,
+        0,
+        31
+      ],
+      [
+        0,
+        0,
+        0,
+        0
+      ]
+    ],
+    "exposure_hours": [
+      417.0,
+      444.0,
+      366.0,
+      0.0
+    ],
+    "Q": [
+      [
+        -0.1750599520383693,
+        0.12949640287769784,
+        0.03117505995203837,
+        0.014388489208633094
+      ],
+      [
+        0.11711711711711711,
+        -0.27477477477477474,
+        0.11711711711711711,
+        0.04054054054054054
+      ],
+      [
+        0.01912568306010929,
+        0.11748633879781421,
+        -0.2213114754098361,
+        0.08469945355191257
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    ]
+  },
+  "test_transition_validation": {
+    "time_step_hours": 1.0,
+    "test_transition_counts_including_self": [
+      [
+        26,
+        3,
+        1,
+        3
+      ],
+      [
+        2,
+        11,
+        3,
+        6
+      ],
+      [
+        0,
+        3,
+        32,
+        4
+      ],
+      [
+        0,
+        0,
+        0,
+        0
+      ]
+    ],
+    "observed_probabilities": [
+      [
+        0.7878787878787878,
+        0.09090909090909091,
+        0.030303030303030304,
+        0.09090909090909091
+      ],
+      [
+        0.09090909090909091,
+        0.5,
+        0.13636363636363635,
+        0.2727272727272727
+      ],
+      [
+        0.0,
+        0.07692307692307693,
+        0.8205128205128205,
+        0.10256410256410256
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "model_probabilities_from_Q": [
+      [
+        0.84592487194874,
+        0.10543470793189554,
+        0.031776303386461015,
+        0.016864116732903493
+      ],
+      [
+        0.09492568767851679,
+        0.7711449396251124,
+        0.09332006349460754,
+        0.04060930920176318
+      ],
+      [
+        0.021280390492306563,
+        0.09313889312561996,
+        0.807236704471453,
+        0.07834401191062045
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "mean_absolute_error_by_state": {
+      "Low Risk": 0.037022487088093727,
+      "Medium Risk": 0.13758076819726917,
+      "High Risk": 0.018748103347424796
+    },
+    "overall_mae_transient_states": 0.06445045287759589,
+    "note": "Held-out test transitions are compared with P(1h)=exp(Q) using only pre-Critical transitions. This is a transition-model diagnostic, not a clinical accuracy metric."
+  },
+  "test_prognosis_comparison": {
+    "censoring_note": "Only test records before the first observed Critical state are compared. Stays ending without observed Critical are right-censored at their last observed hour; records after the first Critical state are excluded.",
+    "uncensored_records": 116,
+    "uncensored_stays": 22,
+    "total_test_records": 936,
+    "total_test_stays": 22,
+    "uncensored_patients": 15,
+    "total_test_patients": 15,
+    "censored_stays": 0,
+    "comparison_by_state": {
+      "Low Risk": {
+        "records": 33,
+        "predicted_mean_hours": 25.792730467654057,
+        "observed_mean_remaining_hours": 6.575757575757576,
+        "mae_hours": 19.216972891896482
+      },
+      "Medium Risk": {
+        "records": 22,
+        "predicted_mean_hours": 22.629287813233713,
+        "observed_mean_remaining_hours": 7.454545454545454,
+        "mae_hours": 15.548572955079061
+      },
+      "High Risk": {
+        "records": 39,
+        "predicted_mean_hours": 18.760598632625033,
+        "observed_mean_remaining_hours": 8.282051282051283,
+        "mae_hours": 10.669224484016054
+      }
+    },
+    "interpretation_note": "Exploratory descriptive diagnostic only. The uncensored subset may be small, records within a stay are correlated, and this is not a censoring-aware survival analysis or a clinical performance metric."
+  }
+}

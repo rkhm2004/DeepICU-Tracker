@@ -1,0 +1,2 @@
+labevent_id,subject_id,hadm_id,stay_id,itemid,charttime,storetime,value,valuenum,valueuom,ref_range_lower,ref_range_upper,flag,priority,comments,intime,outtime,hour,processed_wbc
+225307,10019003,29279905.0,34107647,51301,2153-03-28 03:16:00,2153-03-28 03:39:00,116.1,116.1,K/uL,4.0,10.0,abnormal,STAT,,2153-03-28 02:21:00,2153-03-31 16:59:04,0,116.1
