@@ -471,6 +471,15 @@ def run_clinical_validation():
         "test_subjects": int(test["subject_id"].nunique()),
         "test_deaths": int(y_test.sum()),
         "test_survivors": int(len(y_test) - y_test.sum()),
+        "event_count_warning": (
+            "Only two or fewer test deaths: AUC and average precision are extremely unstable "
+            "and must be reported as exploratory, not as evidence of clinical validation."
+            if int(y_test.sum()) <= 2
+            else (
+                "Report confidence intervals and validate on a larger external cohort; "
+                "this demo cohort alone is not clinical validation."
+            )
+        ),
         "vae_state_ordinal_roc_auc": state_auc,
         "vae_latent_score_auc_assuming_lower_mu_means_higher_risk": score_auc,
         "vae_latent_score_auc_reverse_orientation": reverse_score_auc,
