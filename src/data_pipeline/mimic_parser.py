@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 
 
 BASE_DIR = Path("data/raw/mimic-iv-clinical-database-demo-2.2")
@@ -253,25 +254,82 @@ def parse_mimic_data():
     pivot = full_index.merge(pivot, on=["stay_id", "hour"], how="left", validate="one_to_one")
     pivot = pivot.sort_values(["subject_id", "stay_id", "hour"]).reset_index(drop=True)
 
-    # Patient-level split: every ICU stay from the same subject remains in
-    # exactly one split, preventing inter-stay patient leakage.
+    # Patient-level split: every ICU stay from a subject remains in one split.
+    # When admission mortality labels are available, stratify split allocation
+    # by subject-level mortality so the tiny demo test cohort is less likely to
+    # contain zero deaths. Outcomes are used ONLY to allocate subjects to splits;
+    # they are never added to the model input features.
     subject_ids = np.array(sorted(pivot["subject_id"].dropna().unique()))
     if len(subject_ids) < 3:
         raise ValueError("At least 3 subjects are required for train/validation/test splits.")
-    rng = np.random.default_rng(RANDOM_SEED)
-    shuffled_subjects = subject_ids.copy()
-    rng.shuffle(shuffled_subjects)
-    n_subjects = len(shuffled_subjects)
-    n_train = max(1, int(np.floor(n_subjects * TRAIN_FRACTION)))
-    n_val = max(1, int(np.floor(n_subjects * VAL_FRACTION)))
-    n_test = n_subjects - n_train - n_val
-    if n_test < 1:
-        n_test = 1
-        n_train -= 1
+
     subject_split = {}
-    subject_split.update({sid: "train" for sid in shuffled_subjects[:n_train]})
-    subject_split.update({sid: "validation" for sid in shuffled_subjects[n_train:n_train + n_val]})
-    subject_split.update({sid: "test" for sid in shuffled_subjects[n_train + n_val:]})
+    split_strategy = "random_patient_level_fallback"
+    admissions_path = HOSP_DIR / "admissions.csv"
+    try:
+        admissions = pd.read_csv(
+            admissions_path,
+            usecols=["subject_id", "hospital_expire_flag"],
+        )
+        admissions["hospital_expire_flag"] = pd.to_numeric(
+            admissions["hospital_expire_flag"], errors="coerce"
+        ).fillna(0).astype(int)
+        mortality_by_subject = admissions.groupby("subject_id")[
+            "hospital_expire_flag"
+        ].max()
+        labels = np.array([
+            int(mortality_by_subject.get(subject_id, 0))
+            for subject_id in subject_ids
+        ])
+        class_counts = np.bincount(labels, minlength=2)
+        if len(np.unique(labels)) == 2 and int(class_counts.min()) >= 3:
+            train_ids, temp_ids, train_y, temp_y = train_test_split(
+                subject_ids,
+                labels,
+                test_size=VAL_FRACTION + TEST_FRACTION,
+                random_state=RANDOM_SEED,
+                stratify=labels,
+            )
+            relative_test_fraction = TEST_FRACTION / (VAL_FRACTION + TEST_FRACTION)
+            val_ids, test_ids = train_test_split(
+                temp_ids,
+                test_size=relative_test_fraction,
+                random_state=RANDOM_SEED,
+                stratify=temp_y,
+            )
+            subject_split.update({sid: "train" for sid in train_ids})
+            subject_split.update({sid: "validation" for sid in val_ids})
+            subject_split.update({sid: "test" for sid in test_ids})
+            split_strategy = "patient_level_stratified_by_subject_hospital_mortality"
+        else:
+            raise ValueError(
+                "Not enough subjects in both mortality classes to stratify all splits safely."
+            )
+    except (FileNotFoundError, ValueError, KeyError) as exc:
+        print(
+            "WARNING: mortality-stratified split unavailable; using seeded random "
+            f"patient-level split. Reason: {exc}"
+        )
+        rng = np.random.default_rng(RANDOM_SEED)
+        shuffled_subjects = subject_ids.copy()
+        rng.shuffle(shuffled_subjects)
+        n_subjects = len(shuffled_subjects)
+        n_train = max(1, int(np.floor(n_subjects * TRAIN_FRACTION)))
+        n_val = max(1, int(np.floor(n_subjects * VAL_FRACTION)))
+        n_test = n_subjects - n_train - n_val
+        if n_test < 1:
+            n_test = 1
+            n_train -= 1
+        subject_split.update({sid: "train" for sid in shuffled_subjects[:n_train]})
+        subject_split.update({
+            sid: "validation"
+            for sid in shuffled_subjects[n_train:n_train + n_val]
+        })
+        subject_split.update({
+            sid: "test"
+            for sid in shuffled_subjects[n_train + n_val:]
+        })
+
     pivot["split"] = pivot["subject_id"].map(subject_split)
 
     if pivot["split"].isna().any():
@@ -312,6 +370,12 @@ def parse_mimic_data():
         "window_hours_max": WINDOW_HOURS,
         "window_definition": "hour bins whose start time is before min(outtime, intime + window_hours)",
         "random_seed": RANDOM_SEED,
+        "split_strategy": split_strategy,
+        "split_note": (
+            "Mortality labels are used only for subject-level split stratification, "
+            "never as VAE input features. A small demo cohort still cannot establish "
+            "clinical predictive performance."
+        ),
         "imputation_method": "within-stay forward-fill only, with per-feature maximum carry-forward, then training-split median fallback",
         "max_forward_fill_hours": MAX_FORWARD_FILL_HOURS,
         "missingness_indicator_columns": missingness_columns,
