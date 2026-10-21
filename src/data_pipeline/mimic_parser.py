@@ -337,6 +337,23 @@ def parse_mimic_data():
 
     print("5. Imputing missing values using causal forward-fill and training-only medians...")
     raw_feature_quality = summarize_feature_quality(pivot, FEATURES)
+    # Preserve raw missingness by split before causal imputation. This makes
+    # distribution shift visible without allowing validation/test values to
+    # influence the imputation medians or scaler.
+    raw_missingness_by_split = {}
+    for split_name in ["train", "validation", "test"]:
+        split_rows = pivot.loc[pivot["split"] == split_name]
+        raw_missingness_by_split[split_name] = {
+            feature: {
+                "records": int(len(split_rows)),
+                "missing_count_before_imputation": int(split_rows[feature].isna().sum()),
+                "missing_fraction_before_imputation": (
+                    float(split_rows[feature].isna().mean()) if len(split_rows) else None
+                ),
+                "observed_count_before_imputation": int(split_rows[feature].notna().sum()),
+            }
+            for feature in FEATURES
+        }
     train_mask = pivot["split"] == "train"
     pivot, train_medians = causal_impute_features(pivot, train_mask, FEATURES)
 
@@ -397,6 +414,7 @@ def parse_mimic_data():
     data_quality_report = {
         "purpose": "Data-quality summary for review; unusual values are flagged, not automatically deleted.",
         "feature_quality_before_imputation": raw_feature_quality,
+        "raw_feature_missingness_by_split_before_imputation": raw_missingness_by_split,
         "feature_quality_after_imputation": {
             feature: {
                 "minimum": float(pivot[feature].min()),
