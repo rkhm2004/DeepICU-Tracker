@@ -209,7 +209,7 @@ The current prognosis comparison is descriptive and includes only observations b
 
 | Component | Status |
 |---|---|
-| Patient-level data split | Implemented and checked |
+| Patient-level data split | Implemented; verify locally with audit |
 | Duration-aware hourly index | Implemented |
 | Causal imputation and missingness indicators | Implemented |
 | Train-only fallback medians and scaler | Implemented |
@@ -218,70 +218,171 @@ The current prognosis comparison is descriptive and includes only observations b
 | CTMC estimation and absorbing Critical model | Implemented |
 | Phase-Type/MGF numerical guards | Implemented |
 | Inference and research-labelled plots | Implemented |
-| BN CPT, keyed alignment and class-wise metrics | Implemented |
-| Static patient/admission priors | Not implemented |
-| Independent clinical-outcome validation | Not implemented |
+| BN CPT, keyed alignment and surrogate-label metrics | Implemented |
+| WBC source tracing workflow | Implemented; actual record still requires local data review |
+| Independent-outcome validation script | Implemented; local metrics not yet verified |
+| Static patient/admission priors in explanatory BN | Not implemented |
 | Clinical dashboard | Not implemented |
 
 Passing software tests does not establish clinical validity or suitability for bedside decision-making.
 
-## 8. Run Commands
+## 8. Environment and Dataset Setup
 
-Run these from the repository root in the activated project environment. The parser must run first after the preprocessing changes, because all downstream artifacts depend on its row set and feature values.
+Run all commands from the repository root in an activated Python environment. The examples below use PowerShell on Windows.
 
 \`\`\`powershell
-# Regression tests
+# 1. Switch to the active branch and sync it
+git fetch origin
+git checkout codex
+git pull origin codex
+
+# 2. Create and activate a virtual environment (skip if already configured)
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+# 3. Install dependencies
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+\`\`\`
+
+Download the MIMIC-IV demo dataset separately through its authorized source. Do not commit clinical data to Git. The parser expects these files at the paths below:
+
+\`\`\`text
+data/raw/mimic-iv-clinical-database-demo-2.2/
+├── icu/
+│   ├── icustays.csv
+│   └── chartevents.csv
+└── hosp/
+    ├── labevents.csv
+    └── admissions.csv       # required for independent mortality validation
+\`\`\`
+
+The parser needs the ICU stay and event files; src/clinical_validation.py additionally needs hosp/admissions.csv and raw WBC lab metadata. If your local dataset folder uses a different name, either place the files in the expected folder or update the constants in the scripts before running.
+
+## 9. Run the Pipeline in Order
+
+**Important:** after any parser/preprocessing change, rerun the pipeline from Step 1. Do not reuse a tensor, latent states, Q matrix or evaluation results produced from an older index.
+
+### Step 1 — Run regression tests
+
+\`\`\`powershell
 python -m unittest tests/test_mathematical_pipeline.py
 python -m unittest tests/test_bayesian_network.py
+python -m unittest tests/test_clinical_validation.py
+\`\`\`
 
-# Rebuild all artifacts using the corrected parser
+### Step 2 — Parse and preprocess raw MIMIC data
+
+\`\`\`powershell
 python src/data_pipeline/mimic_parser.py
-python src/vae/train.py
-python src/markov_mgf/ctmc_estimator.py
-python src/markov_mgf/mgf_calculator.py
-python src/inference.py
-python src/plot.py
-python src/evaluation.py
-python src/bayesian_net/train_infer.py
+\`\`\`
 
-# Run the non-destructive audit against the new artifacts
+Generates data/processed/mimic_tensor.pt, mimic_index.csv, preprocessing.json, split_summary.csv and data_quality_report.json.
+
+### Step 3 — Train the VAE and create model-defined states
+
+\`\`\`powershell
+python src/vae/train.py
+\`\`\`
+
+Generates the VAE checkpoint, training metrics/history, metadata, and data/processed/latent_states.csv.
+
+### Step 4 — Estimate the CTMC transition generator
+
+\`\`\`powershell
+python src/markov_mgf/ctmc_estimator.py
+\`\`\`
+
+Generates data/processed/q_matrix.npy and the transition-count/exposure artifacts.
+
+### Step 5 — Calculate Phase-Type/MGF results
+
+\`\`\`powershell
+python src/markov_mgf/mgf_calculator.py
+\`\`\`
+
+Calculates expected absorption time, variance and standard deviation under the fitted CTMC assumptions. These are model-based population estimates, not guaranteed patient countdowns.
+
+### Step 6 — Run inference
+
+\`\`\`powershell
+python src/inference.py
+\`\`\`
+
+Generates results/inference_results.csv.
+
+### Step 7 — Generate visualizations
+
+\`\`\`powershell
+python src/plot.py
+\`\`\`
+
+Generates the project plots using the current artifacts.
+
+### Step 8 — Evaluate the mathematical pipeline
+
+\`\`\`powershell
+python src/evaluation.py
+\`\`\`
+
+Generates results/evaluation_report.json, split metrics and evaluation plots. The time-to-Critical comparison is descriptive; the Critical event is a VAE-defined state rather than an independent clinical endpoint.
+
+### Step 9 — Train and evaluate the VAE-surrogate Bayesian Network
+
+\`\`\`powershell
+python src/bayesian_net/train_infer.py
+\`\`\`
+
+Generates results/bn_predictions.csv, results/bn_evaluation.json and data/processed/bn_model.json. These metrics measure agreement with VAE-derived labels, **not clinical accuracy**.
+
+### Step 10 — Run independent-outcome and WBC validation
+
+\`\`\`powershell
+python src/clinical_validation.py
+\`\`\`
+
+Generates:
+- results/wbc_outlier_trace.csv — raw WBC values above the review threshold, with available unit/reference metadata and processed-hour linkage.
+- results/clinical_validation_report.json — VAE state/latent-score association with independent in-hospital mortality, plus separate mortality-targeted BN metrics and censoring-aware prognosis diagnostics.
+- results/bn_hospital_mortality_predictions.csv — test predictions from the outcome-targeted BN.
+- results/prognosis_survival_curve.csv — Kaplan–Meier estimates compared with Phase-Type survival predictions for the model-defined Critical state.
+
+Review the raw WBC source rows before deciding whether a high value is erroneous. The script flags values for inspection; it does not silently delete them or establish clinical plausibility automatically. The mortality and prognosis analyses are exploratory and do not constitute clinical validation.
+
+### Step 11 — Run the full non-destructive audit
+
+\`\`\`powershell
 python audit_pipeline.py
 \`\`\`
 
-## 9. Generated Artifacts
+Run this **after** rebuilding the artifacts so that the audit checks the current outputs. Investigate all FAIL items and review WARN items; a clean audit is not evidence of clinical effectiveness.
 
-- data/processed/mimic_tensor.pt — scaled three-feature model input.
-- data/processed/mimic_index.csv — subject/stay/hour keys, split, imputed raw-unit features and missingness indicators.
-- data/processed/preprocessing.json — training medians, scaler parameters and preprocessing configuration.
-- data/processed/data_quality_report.json — raw missingness, feature ranges and review flags.
-- data/processed/latent_states.csv — VAE latent scores and model-defined states.
-- data/processed/q_matrix.npy — estimated CTMC generator.
-- results/inference_results.csv — per-hour state, model-based expected absorption time and missing-input quality flags.
-- results/evaluation_report.json — split integrity, VAE metrics, CTMC diagnostics and descriptive prognosis evaluation.
-- results/bn_predictions.csv — held-out BN probabilities and explanations.
-- results/bn_evaluation.json — confusion matrix and agreement metrics against VAE labels.
+## 10. Key Outputs
 
-## 10. Final Note
+| Output | Purpose |
+|---|---|
+| data/processed/mimic_tensor.pt | Scaled three-feature VAE input |
+| data/processed/mimic_index.csv | Subject/stay/hour keys, split, features and missingness indicators |
+| data/processed/preprocessing.json | Train-only imputation/scaling metadata |
+| data/processed/data_quality_report.json | Raw feature ranges, missingness and review flags |
+| data/processed/latent_states.csv | VAE latent scores and model-defined states |
+| data/processed/q_matrix.npy | Estimated CTMC generator |
+| results/inference_results.csv | Per-hour state and expected absorption-time estimate |
+| results/evaluation_report.json | Split integrity, VAE metrics, CTMC diagnostics and descriptive prognosis evaluation |
+| results/bn_evaluation.json | BN agreement metrics against VAE-derived labels |
+| results/clinical_validation_report.json | Independent-outcome exploratory analysis and validation summary |
+| results/wbc_outlier_trace.csv | Raw WBC source records requiring review |
+| results/bn_hospital_mortality_predictions.csv | Separate outcome-targeted BN predictions |
+| results/prognosis_survival_curve.csv | Censoring-aware survival comparison for model-defined Critical |
 
-DeepICU-Tracker is a mathematical/software research prototype. It is not certified and is not clinically validated or intended for bedside decisions. Its current contribution is a reproducible pipeline with leakage-aware preprocessing, stochastic-process modelling, numerical checks and transparent surrogate-label evaluation. Independent clinical outcome validation remains future work.
+## 11. Limitations and Interpretation
 
-## 8. Independent Clinical Outcome and Prognosis Validation
+- The VAE's Low, Medium, High and Critical labels are **model-defined bins**, not validated clinical severity classes.
+- The current feature set contains only heart rate, systolic blood pressure and WBC. It is not a comprehensive ICU severity assessment.
+- The original Bayesian Network predicts VAE-derived labels. Its agreement score is not clinical accuracy and it is not a causal explanation model.
+- The separate mortality-targeted BN and VAE-vs-mortality checks use an independent endpoint, but performance must be interpreted with test sample/event counts and uncertainty. Small demo cohorts may yield unstable or undefined metrics.
+- Phase-Type expected absorption time and standard deviation are model-based population quantities under CTMC assumptions, not an individual countdown or calibrated clinical prediction interval.
+- The survival comparison handles right-censoring for time to the first **model-defined Critical label**. It does not establish clinical time-to-deterioration performance.
+- Static patient/admission priors, broader physiological features, external-cohort validation and the clinical dashboard remain future work.
 
-After regenerating the parser, VAE, and CTMC artifacts, run:
-
-```powershell
-python src/clinical_validation.py
-python -m unittest tests/test_clinical_validation.py
-```
-
-The script creates:
-
-- `results/wbc_outlier_trace.csv`: raw WBC lab values above the broad review threshold, including source timestamps, units, reference ranges/flags when available, ICU stay linkage, and the matching processed hourly value. Inspect this file to determine whether the WBC value of 116.1 is supported by the original record and what unit was recorded. The code flags values; it does not automatically remove them or claim clinical plausibility.
-- `results/clinical_validation_report.json`: evaluation of the first-hour VAE state against the independent MIMIC in-hospital mortality field, including outcome counts, mortality rates by model-defined state, and score AUCs in both latent-score orientations.
-- `results/bn_hospital_mortality_predictions.csv`: predictions from a separate outcome-targeted discrete BN, `P(hospital mortality | HR bin, SBP bin, WBC bin)`, trained only on one baseline record per training subject and evaluated on baseline records from test subjects.
-- `results/prognosis_survival_curve.csv`: Kaplan-Meier survival estimates for time to the first model-defined Critical state, compared with Phase-Type survival predictions, retaining right-censored test trajectories.
-
-**Important interpretation limits:** the outcome endpoint is in-hospital mortality, not a comprehensive measure of deterioration. The demo dataset and held-out test cohort are small, so AUC may be undefined if the test split contains only one outcome class. The VAE state names/cutoffs are still model-defined; mortality-rate patterns can provide evidence about their direction but do not by themselves validate calibrated clinical severity categories. The survival analysis is censoring-aware for time to the model-defined Critical state, not a clinical endpoint, because the event is generated from the VAE itself. Do not use these results for patient-care decisions.
-
-The original BN in `src/bayesian_net/train_infer.py` continues to predict VAE surrogate labels. Its agreement metrics must not be described as clinical accuracy; the separate mortality-targeted BN above is the independent-outcome experiment.
-
+**DeepICU-Tracker is a mathematical/software research prototype, not a clinically validated or certified system. It must not be used to guide patient-care decisions.**
