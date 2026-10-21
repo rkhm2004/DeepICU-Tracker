@@ -140,6 +140,11 @@ def evaluate_pipeline():
     if quality_path.exists():
         with open(quality_path, "r", encoding="utf-8") as f:
             quality_report = json.load(f)
+    training_metrics_path = Path("data/processed/vae_training_metrics.json")
+    training_metrics = None
+    if training_metrics_path.exists():
+        with open(training_metrics_path, "r", encoding="utf-8") as f:
+            training_metrics = json.load(f)
 
     if len(tensor) != len(index_df):
         raise ValueError("Tensor rows and index rows are not aligned.")
@@ -343,6 +348,7 @@ def evaluate_pipeline():
         },
         "preprocessing": {
             "fit_on_split": preprocessing.get("fit_on_split"),
+            "split_strategy": preprocessing.get("split_strategy", "not recorded"),
             "features": preprocessing.get("features"),
             "imputation_method": preprocessing.get("imputation_method"),
             "max_forward_fill_hours": preprocessing.get("max_forward_fill_hours"),
@@ -361,6 +367,7 @@ def evaluate_pipeline():
         ),
         "data_quality": quality_report,
         "feature_distribution_by_split_standardized_tensor": feature_distribution_by_split,
+        "vae_training_diagnostics": training_metrics,
         "vae": {
             "evaluation_reconstruction": "deterministic decoder(mu), no latent sampling for validation/test metrics",
             "cutoffs": cutoffs.tolist(),
