@@ -369,7 +369,8 @@ def _clinical_mortality_survival_summary(test_baseline: pd.DataFrame, admissions
         }
 
     outcome_cols = ["hadm_id", "hospital_expire_flag", "deathtime", "dischtime"]
-    cohort = test_baseline.merge(
+    base = test_baseline.drop(columns=["hospital_expire_flag"], errors="ignore")
+    cohort = base.merge(
         admissions[outcome_cols].drop_duplicates("hadm_id"),
         on="hadm_id", how="left", validate="many_to_one"
     )
