@@ -343,17 +343,26 @@ def parse_mimic_data():
     raw_missingness_by_split = {}
     for split_name in ["train", "validation", "test"]:
         split_rows = pivot.loc[pivot["split"] == split_name]
-        raw_missingness_by_split[split_name] = {
-            feature: {
+        raw_missingness_by_split[split_name] = {}
+        for feature in FEATURES:
+            raw_values = pd.to_numeric(split_rows[feature], errors="coerce").dropna()
+            raw_missingness_by_split[split_name][feature] = {
                 "records": int(len(split_rows)),
                 "missing_count_before_imputation": int(split_rows[feature].isna().sum()),
                 "missing_fraction_before_imputation": (
                     float(split_rows[feature].isna().mean()) if len(split_rows) else None
                 ),
-                "observed_count_before_imputation": int(split_rows[feature].notna().sum()),
+                "observed_count_before_imputation": int(len(raw_values)),
+                "observed_value_summary_before_imputation": {
+                    "mean": float(raw_values.mean()) if len(raw_values) else None,
+                    "std": float(raw_values.std(ddof=0)) if len(raw_values) else None,
+                    "p10": float(raw_values.quantile(0.10)) if len(raw_values) else None,
+                    "median": float(raw_values.median()) if len(raw_values) else None,
+                    "p90": float(raw_values.quantile(0.90)) if len(raw_values) else None,
+                    "minimum": float(raw_values.min()) if len(raw_values) else None,
+                    "maximum": float(raw_values.max()) if len(raw_values) else None,
+                },
             }
-            for feature in FEATURES
-        }
     train_mask = pivot["split"] == "train"
     pivot, train_medians = causal_impute_features(pivot, train_mask, FEATURES)
 
