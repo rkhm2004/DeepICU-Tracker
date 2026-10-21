@@ -86,7 +86,9 @@ def main():
     rows = []
     with torch.no_grad():
         for i, patient_tensor in enumerate(real_data_tensor):
-            _, mu, _ = model(patient_tensor.unsqueeze(0))
+            # Inference uses the deterministic posterior mean. Sampling z is
+            # useful during VAE training but unnecessary for state assignment.
+            mu, _ = model.encode(patient_tensor.unsqueeze(0))
             risk_score = float(mu.item())
 
             state = latent_to_state(risk_score, cutoffs)
