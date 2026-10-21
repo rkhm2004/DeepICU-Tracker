@@ -153,7 +153,8 @@ def train_vae(
             optimizer.step()
             train_total += loss.item()
 
-        train_loss = train_total / len(train_loader.dataset)
+        # Compare train and validation using the same deterministic metric.
+        train_loss = _mean_loss(model, train_data)
         val_loss = _mean_loss(model, val_data)
         history.append(
             {
