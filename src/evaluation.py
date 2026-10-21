@@ -38,7 +38,10 @@ def _evaluate_vae(model, tensor, indices):
     with torch.no_grad():
         for start in range(0, len(tensor), 1024):
             batch = tensor[start:start + 1024]
-            recon, mu, logvar = model(batch)
+            # Deterministic evaluation: use posterior mean z=mu rather than
+            # sampling z. Training still uses stochastic reparameterization.
+            mu, logvar = model.encode(batch)
+            recon = model.decode(mu)
             mse = torch.nn.functional.mse_loss(recon, batch, reduction="sum")
             kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
             total_mse += float(mse.item())
@@ -188,6 +191,22 @@ def evaluate_pipeline():
             for state in STATE_NAMES
         }
 
+    # Split-distribution diagnostics help distinguish model overfitting from
+    # a small validation cohort whose feature distribution differs from train.
+    feature_distribution_by_split = {}
+    feature_names = preprocessing.get("features", ["feature_0", "feature_1", "feature_2"])
+    for split in SPLITS:
+        mask = index_df["split"].to_numpy() == split
+        subset = tensor[mask].detach().cpu().numpy()
+        feature_distribution_by_split[split] = {
+            "records": int(len(subset)),
+            "mean": np.mean(subset, axis=0).astype(float).tolist(),
+            "std": np.std(subset, axis=0, ddof=0).astype(float).tolist(),
+            "p01": np.quantile(subset, 0.01, axis=0).astype(float).tolist(),
+            "median": np.quantile(subset, 0.50, axis=0).astype(float).tolist(),
+            "p99": np.quantile(subset, 0.99, axis=0).astype(float).tolist(),
+        }
+
     transition_counts, exposure = None, None
     train_df = evaluation_df[evaluation_df["split"] == "train"]
     Q, transition_counts, exposure = estimate_generator(train_df)
@@ -257,6 +276,63 @@ def evaluate_pipeline():
                 "mae_hours": None,
             }
 
+    # Stay-level prognosis comparison: one row per ICU stay, using the
+    # state at hour 0 to select the Phase-Type mean and time to first
+    # model-defined Critical state as the observed event time. Stays with no
+    # observed Critical state are right-censored, not treated as events.
+    stay_level_rows = []
+    for stay_id, stay in test_df.sort_values("hour").groupby("stay_id", sort=False):
+        stay = stay.sort_values("hour")
+        first_row = stay.iloc[0]
+        initial_state = int(first_row["state"])
+        last_hour = float(stay["hour"].max())
+        critical_hours = stay.loc[stay["state"] == 3, "hour"]
+        event_observed = not critical_hours.empty
+        event_time = float(critical_hours.min()) if event_observed else last_hour
+        predicted_mean = (
+            float(means[initial_state])
+            if initial_state < 3 and np.isfinite(means[initial_state])
+            else 0.0
+        )
+        stay_level_rows.append({
+            "subject_id": int(first_row["subject_id"]),
+            "stay_id": int(stay_id),
+            "initial_state": STATE_NAMES[initial_state],
+            "predicted_mean_hours": predicted_mean,
+            "observed_time_hours": event_time,
+            "event_observed": bool(event_observed),
+            "followup_hours": last_hour,
+        })
+
+    stay_level_df = pd.DataFrame(stay_level_rows)
+    stay_level_df.to_csv(out_dir / "prognosis_stay_level_test.csv", index=False)
+    stay_level_summary = {}
+    if not stay_level_df.empty:
+        for state_name in STATE_NAMES[:3]:
+            subset = stay_level_df[stay_level_df["initial_state"] == state_name]
+            events = subset[subset["event_observed"]]
+            stay_level_summary[state_name] = {
+                "stays": int(len(subset)),
+                "events_observed": int(subset["event_observed"].sum()),
+                "right_censored": int((~subset["event_observed"]).sum()),
+                "predicted_mean_hours_mean": (
+                    float(subset["predicted_mean_hours"].mean()) if len(subset) else None
+                ),
+                "observed_event_time_mean_hours": (
+                    float(events["observed_time_hours"].mean()) if len(events) else None
+                ),
+                "event_only_mae_hours": (
+                    float(np.mean(np.abs(
+                        events["predicted_mean_hours"].to_numpy()
+                        - events["observed_time_hours"].to_numpy()
+                    ))) if len(events) else None
+                ),
+                "warning": (
+                    "Descriptive stay-level comparison only; not a censoring-aware survival score "
+                    "and not clinical prognosis validation."
+                ),
+            }
+
     report = {
         "split_integrity": {
             "subject_overlap": overlap,
@@ -284,7 +360,9 @@ def evaluate_pipeline():
             "Only heart rate, systolic blood pressure and WBC are used. This is not a comprehensive ICU severity assessment."
         ),
         "data_quality": quality_report,
+        "feature_distribution_by_split_standardized_tensor": feature_distribution_by_split,
         "vae": {
+            "evaluation_reconstruction": "deterministic decoder(mu), no latent sampling for validation/test metrics",
             "cutoffs": cutoffs.tolist(),
             "cutoffs_fit_on_split": metadata.get("cutoffs_fit_on_split"),
             "metrics_by_split": vae_metrics,
@@ -314,7 +392,9 @@ def evaluate_pipeline():
                 test_observed["stay_id"].nunique()
                 - test_observed.loc[uncensored, "stay_id"].nunique()
             ),
-            "comparison_by_state": observed_comparison,
+            "comparison_by_state_record_level_legacy": observed_comparison,
+            "comparison_by_initial_state_stay_level": stay_level_summary,
+            "stay_level_csv": "results/prognosis_stay_level_test.csv",
             "interpretation_note": (
                 "Exploratory descriptive diagnostic only. The uncensored subset may be small, "
                 "records within a stay are correlated, and this is not a censoring-aware survival analysis "
@@ -384,21 +464,35 @@ def evaluate_pipeline():
     plt.close()
 
     # Plot 5: model expected time versus observed mean remaining time.
-    labels = [state for state, item in observed_comparison.items() if item["records"] > 0]
+    # Plot the stay-level comparison, not the correlated hourly-record comparison.
+    labels = [
+        state for state in STATE_NAMES[:3]
+        if stay_level_summary.get(state, {}).get("stays", 0) > 0
+        and stay_level_summary[state].get("events_observed", 0) > 0
+    ]
     if labels:
         x = np.arange(len(labels))
-        predicted = [observed_comparison[s]["predicted_mean_hours"] for s in labels]
-        observed = [observed_comparison[s]["observed_mean_remaining_hours"] for s in labels]
+        predicted = [
+            stay_level_summary[s]["predicted_mean_hours_mean"] for s in labels
+        ]
+        observed = [
+            stay_level_summary[s]["observed_event_time_mean_hours"] for s in labels
+        ]
         width = 0.35
         plt.figure(figsize=(9, 6))
-        plt.bar(x - width / 2, predicted, width, label="Phase-Type predicted")
-        plt.bar(x + width / 2, observed, width, label="Observed test mean")
+        plt.bar(x - width / 2, predicted, width, label="Predicted mean by initial state")
+        plt.bar(x + width / 2, observed, width, label="Observed first-Critical time (events only)")
         plt.xticks(x, labels)
-        plt.ylabel("Hours to observed Critical")
-        plt.xlabel("Current risk state")
-        plt.title("Predicted vs Observed Time to Critical (Uncensored Test Diagnostic)")
+        plt.ylabel("Hours from start of ICU stay")
+        plt.xlabel("Initial model-defined state at hour 0")
+        plt.title("Stay-Level Phase-Type Check (Exploratory)")
         plt.legend()
-        plt.tight_layout()
+        plt.figtext(
+            0.5, 0.01,
+            "One observation per stay. Censored stays are reported separately; Critical is model-defined, not a clinical endpoint.",
+            ha="center", fontsize=8,
+        )
+        plt.tight_layout(rect=(0, 0.04, 1, 1))
         plt.savefig(out_dir / "evaluation_prognosis_comparison.png", dpi=300)
         plt.close()
 
