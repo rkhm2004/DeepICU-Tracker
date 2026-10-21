@@ -173,7 +173,8 @@ def evaluate_pipeline():
     vae_metrics = {}
     latent_records = []
     with torch.no_grad():
-        _, mu_all, _ = model(tensor)
+        # Deterministic latent score: state assignment uses mu, not sampled z.
+        mu_all, _ = model.encode(tensor)
         mu_all = mu_all.cpu().numpy().reshape(-1)
 
     for split in SPLITS:
