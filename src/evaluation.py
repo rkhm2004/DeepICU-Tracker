@@ -282,12 +282,32 @@ def evaluate_pipeline():
                 "mae_hours": None,
             }
 
-    # Stay-level prognosis comparison: one row per ICU stay, using the
-    # state at hour 0 to select the Phase-Type mean and time to first
-    # model-defined Critical state as the observed event time. Stays with no
-    # observed Critical state are right-censored, not treated as events.
+    # Independent prognosis unit: one first ICU stay per subject, matching
+    # clinical_validation.py. Do not count multiple stays from the same person
+    # as independent observations in the stay-level summary.
+    stay_level_df = test_df.copy()
+    raw_stays_path = Path("data/raw/mimic-iv-clinical-database-demo-2.2/icu/icustays.csv")
+    if raw_stays_path.exists():
+        stay_meta = pd.read_csv(raw_stays_path, usecols=["subject_id", "stay_id", "intime"])
+        stay_meta["intime"] = pd.to_datetime(stay_meta["intime"], errors="coerce")
+        stay_level_df = stay_level_df.merge(
+            stay_meta, on=["subject_id", "stay_id"], how="left", validate="many_to_one"
+        )
+        stay_level_df = stay_level_df.sort_values(
+            ["subject_id", "intime", "stay_id", "hour"]
+        )
+    else:
+        # Fallback is explicit and deterministic if raw stay metadata is absent.
+        stay_level_df = stay_level_df.sort_values(["subject_id", "stay_id", "hour"])
+    stay_level_df = stay_level_df.drop_duplicates("subject_id", keep="first")
+
+    # Stay-level prognosis comparison: one row per subject's first ICU stay.
+    # Time to first model-defined Critical is the event time; otherwise censor
+    # at the last observed hour. These are model-defined events, not clinical events.
     stay_level_rows = []
-    for stay_id, stay in test_df.sort_values("hour").groupby("stay_id", sort=False):
+    for stay_id, stay in test_df[
+        test_df["stay_id"].isin(set(stay_level_df["stay_id"]))
+    ].sort_values("hour").groupby("stay_id", sort=False):
         stay = stay.sort_values("hour")
         first_row = stay.iloc[0]
         initial_state = int(first_row["state"])
