@@ -355,6 +355,92 @@ def _prognosis_survival_analysis(latent, stays, q_matrix, selected_test_stays):
     return report, curve
 
 
+def _clinical_mortality_survival_summary(test_baseline: pd.DataFrame, admissions: pd.DataFrame):
+    """Describe 48-hour time-to-in-hospital-death using independent source outcomes.
+
+    This deliberately does not compare the Critical-state Phase-Type model to death:
+    that CTMC was trained on VAE state transitions, not mortality events.
+    """
+    needed = {"hadm_id", "deathtime", "dischtime"}
+    if not needed.issubset(admissions.columns):
+        return {
+            "available": False,
+            "reason": "Admissions table lacks deathtime and/or dischtime; cannot derive time-to-death and censoring reliably.",
+        }
+
+    outcome_cols = ["hadm_id", "hospital_expire_flag", "deathtime", "dischtime"]
+    cohort = test_baseline.merge(
+        admissions[outcome_cols].drop_duplicates("hadm_id"),
+        on="hadm_id", how="left", validate="many_to_one"
+    )
+    cohort["intime"] = pd.to_datetime(cohort["intime"], errors="coerce")
+    cohort["deathtime"] = pd.to_datetime(cohort["deathtime"], errors="coerce")
+    cohort["dischtime"] = pd.to_datetime(cohort["dischtime"], errors="coerce")
+    times, events = [], []
+    excluded = 0
+    for row in cohort.itertuples(index=False):
+        if pd.isna(row.intime):
+            excluded += 1
+            continue
+        horizon = row.intime + pd.Timedelta(hours=MAX_WINDOW_HOURS)
+        is_death = int(row.hospital_expire_flag) == 1
+        if is_death and pd.notna(row.deathtime):
+            if row.deathtime < row.intime:
+                excluded += 1
+                continue
+            if row.deathtime <= horizon:
+                times.append((row.deathtime - row.intime).total_seconds() / 3600.0)
+                events.append(1)
+                continue
+        if pd.notna(row.dischtime):
+            censor_at = min(row.dischtime, horizon)
+            if censor_at < row.intime:
+                excluded += 1
+                continue
+            times.append((censor_at - row.intime).total_seconds() / 3600.0)
+            events.append(0)
+        elif not is_death:
+            # No documented discharge time: only count the known ICU observation
+            # window as follow-up if outtime is available.
+            outtime = getattr(row, "outtime", pd.NaT)
+            if pd.isna(outtime) or outtime < row.intime:
+                excluded += 1
+                continue
+            times.append(min((outtime - row.intime).total_seconds() / 3600.0, MAX_WINDOW_HOURS))
+            events.append(0)
+        else:
+            # Death flag without timestamp is a known outcome but not a usable
+            # event time; do not silently recode it as censored.
+            excluded += 1
+
+    if not times:
+        return {
+            "available": False,
+            "reason": "No usable time-to-event records after checking timestamps.",
+            "excluded_records": int(excluded),
+        }
+    grid = GRID_HOURS
+    km = _kaplan_meier(times, events, grid)
+    return {
+        "available": True,
+        "endpoint": "time from first ICU admission to in-hospital death within 48 hours; discharge alive or 48 hours is censoring",
+        "independent_unit": "one first ICU stay per test subject",
+        "subjects_with_usable_times": int(len(times)),
+        "deaths_with_event_time_within_48h": int(sum(events)),
+        "right_censored": int(len(events) - sum(events)),
+        "excluded_records_due_to_missing_or_inconsistent_timestamps": int(excluded),
+        "grid_hours": grid,
+        "kaplan_meier_probability_surviving_without_in_hospital_death": km.tolist(),
+        "phase_type_comparison": None,
+        "interpretation": (
+            "This is an independent clinical endpoint summary, not a comparison with the current Phase-Type model. "
+            "The current CTMC models time to a VAE-defined Critical state, not time to death; comparing those curves "
+            "would mismatch endpoints. A death-specific survival model would need to be trained on training-split "
+            "clinical event times and evaluated with adequate event counts."
+        ),
+    }
+
+
 def run_clinical_validation():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for path in [INDEX_PATH, LATENT_PATH, Q_PATH]:
@@ -390,7 +476,7 @@ def run_clinical_validation():
     admissions_path = require(HOSP_DIR / "admissions.csv")
     admissions_header = pd.read_csv(admissions_path, nrows=0).columns
     admission_cols = [
-        c for c in ["hadm_id", "subject_id", "hospital_expire_flag", "deathtime"]
+        c for c in ["hadm_id", "subject_id", "hospital_expire_flag", "deathtime", "dischtime"]
         if c in admissions_header
     ]
     if "hadm_id" not in admission_cols:
@@ -450,6 +536,10 @@ def run_clinical_validation():
             "mortality_rate": float(subset.mean()) if len(subset) else None,
         }
 
+    # Independent clinical survival endpoint summary. This is intentionally
+    # reported separately from the Phase-Type model, whose event is VAE Critical.
+    clinical_survival_report = _clinical_mortality_survival_summary(test, admissions)
+
     # 4. Fit a separate BN whose target is the independent hospital outcome.
     bn_report, bn_predictions = _fit_discrete_mortality_bn(train, test)
     bn_predictions.to_csv(OUT_DIR / "bn_hospital_mortality_predictions.csv", index=False)
@@ -507,6 +597,7 @@ def run_clinical_validation():
         },
         "vae_independent_outcome_evaluation": outcome_report,
         "bayesian_network_independent_outcome_evaluation": bn_report,
+        "independent_clinical_survival_endpoint": clinical_survival_report,
         "censoring_aware_prognosis_evaluation": prognosis_report,
     }
     with (OUT_DIR / "clinical_validation_report.json").open("w", encoding="utf-8") as f:
