@@ -200,11 +200,27 @@ def train_vae(
         "validation": _feature_mse(model, val_data),
         "test": _feature_mse(model, test_data),
     }
+    feature_names = ["heart_rate", "sbp", "wbc"] if data.shape[1] == 3 else [
+        f"feature_{i}" for i in range(data.shape[1])
+    ]
+    feature_gap_diagnostics = {}
+    for feature_index, feature_name in enumerate(feature_names):
+        train_mse = float(split_feature_mse["train"][feature_index])
+        val_mse = float(split_feature_mse["validation"][feature_index])
+        test_mse = float(split_feature_mse["test"][feature_index])
+        feature_gap_diagnostics[feature_name] = {
+            "train_mse": train_mse,
+            "validation_mse": val_mse,
+            "test_mse": test_mse,
+            "test_to_train_mse_ratio": test_mse / train_mse if train_mse > 0 else None,
+            "test_to_validation_mse_ratio": test_mse / val_mse if val_mse > 0 else None,
+        }
 
     metrics = {
         "evaluation_reconstruction": "deterministic decoder(mu), no latent sampling for validation/test metrics",
         "feature_order": ["heart_rate", "sbp", "wbc"] if data.shape[1] == 3 else list(range(data.shape[1])),
         "per_feature_reconstruction_mse_by_split": split_feature_mse,
+        "per_feature_generalization_gap": feature_gap_diagnostics,
         "seed": RANDOM_SEED,
         "epochs_requested": epochs,
         "epochs_trained": len(history),
