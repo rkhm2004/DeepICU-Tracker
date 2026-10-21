@@ -132,6 +132,24 @@ def estimate_ctmc(
     print(transition_counts.astype(int))
     print("\nExposure hours by state:")
     print(np.round(exposure_hours, 2))
+    print("\nOutgoing transition rates by transient state (per hour):")
+    for state in range(CRITICAL_STATE):
+        outgoing = float(-Q[state, state])
+        observed_transitions = int(transition_counts[state].sum())
+        print(
+            f"  state {state}: exposure={exposure_hours[state]:.1f} h, "
+            f"observed transitions={observed_transitions}, "
+            f"total exit rate={outgoing:.6f}/h"
+        )
+        if exposure_hours[state] <= 0:
+            print("    WARNING: no observed exposure; rates for this state are not estimable.")
+        elif observed_transitions == 0:
+            print("    WARNING: no observed state changes; estimated exit rate is zero.")
+    print(
+        "\nInterpretation: Q is estimated from hourly state labels. "
+        "Critical is treated as absorbing for this model, although the VAE can "
+        "assign a later hourly record to a different state."
+    )
     print(f"\nSaved Q matrix to {output_path}")
 
     return Q
