@@ -203,7 +203,7 @@ def train_vae(
 
     metrics = {
         "evaluation_reconstruction": "deterministic decoder(mu), no latent sampling for validation/test metrics",
-        "feature_order": list(range(data.shape[1])),
+        "feature_order": ["heart_rate", "sbp", "wbc"] if data.shape[1] == 3 else list(range(data.shape[1])),
         "per_feature_reconstruction_mse_by_split": split_feature_mse,
         "seed": RANDOM_SEED,
         "epochs_requested": epochs,
