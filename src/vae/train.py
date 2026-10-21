@@ -31,7 +31,18 @@ def vae_loss_function(recon_x, x, mu, logvar, observed_mask=None, beta=1.0):
         mask = observed_mask.to(dtype=x.dtype)
         if mask.shape != x.shape:
             raise ValueError("observed_mask must have the same shape as x.")
-        recon_loss = (((recon_x - x) ** 2) * mask).sum()
+        # Normalize each feature by its observed count within the batch, so
+        # frequently measured heart rate does not dominate sparse WBC targets.
+        squared = (recon_x - x).pow(2) * mask
+        counts = mask.sum(dim=0)
+        present = counts > 0
+        if present.any():
+            per_feature_mse = squared.sum(dim=0)[present] / counts[present]
+            # Scale by batch size to keep the reconstruction/KL terms comparable
+            # to the summed-per-record VAE objective.
+            recon_loss = per_feature_mse.sum() * x.shape[0]
+        else:
+            recon_loss = recon_x.sum() * 0.0
     kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
     return recon_loss + beta * kld_loss
 
@@ -254,7 +265,8 @@ def train_vae(
 
     metrics = {
         "evaluation_reconstruction": "deterministic decoder(mu), no latent sampling for validation/test metrics",
-        "reconstruction_objective": "masked MSE on originally observed features only plus KL divergence; imputed values are encoder inputs but not reconstruction targets",
+        "reconstruction_objective": "per-feature observed-only masked MSE normalized by observed count in each batch, summed across present features, plus KL divergence; imputed values are encoder inputs but not reconstruction targets",
+        "feature_balancing": "each feature contributes its own observed-only mean squared error rather than raw observation-count-weighted squared error; sparse WBC still has high sampling uncertainty",
         "observed_target_counts_by_split": {
             split_name: dict(zip(features, counts))
             for split_name, counts in observed_counts.items()
