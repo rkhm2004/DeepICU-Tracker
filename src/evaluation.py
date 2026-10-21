@@ -213,6 +213,46 @@ def evaluate_pipeline():
             "p99": np.quantile(subset, 0.99, axis=0).astype(float).tolist(),
         }
 
+    # Per-feature reconstruction error split by whether the original hourly
+    # measurement existed before imputation. The model tensor is standardized,
+    # while the missingness indicators were preserved in mimic_index.csv.
+    model.eval()
+    with torch.no_grad():
+        mu_all_tensor, _ = model.encode(tensor)
+        reconstructed_tensor = model.decode(mu_all_tensor).cpu().numpy()
+    observed_vs_imputed_reconstruction = {}
+    for split in SPLITS:
+        split_mask = index_df["split"].to_numpy() == split
+        split_report = {}
+        for feature_idx, feature in enumerate(feature_names):
+            missing_col = f"{feature}_was_missing"
+            if missing_col not in index_df.columns:
+                split_report[feature] = {
+                    "status": "missingness indicator unavailable",
+                    "observed": None,
+                    "imputed": None,
+                }
+                continue
+            missing = index_df[missing_col].to_numpy(dtype=bool)
+            feature_error = (
+                reconstructed_tensor[:, feature_idx]
+                - tensor[:, feature_idx].cpu().numpy()
+            ) ** 2
+            feature_report = {}
+            for label, group_mask in (
+                ("originally_observed", split_mask & ~missing),
+                ("imputed_or_fallback", split_mask & missing),
+            ):
+                count = int(group_mask.sum())
+                feature_report[label] = {
+                    "records": count,
+                    "reconstruction_mse_standardized": (
+                        float(feature_error[group_mask].mean()) if count else None
+                    ),
+                }
+            split_report[feature] = feature_report
+        observed_vs_imputed_reconstruction[split] = split_report
+
     transition_counts, exposure = None, None
     train_df = evaluation_df[evaluation_df["split"] == "train"]
     Q, transition_counts, exposure = estimate_generator(train_df)
@@ -388,6 +428,12 @@ def evaluate_pipeline():
         ),
         "data_quality": quality_report,
         "feature_distribution_by_split_standardized_tensor": feature_distribution_by_split,
+        "reconstruction_error_by_original_observed_vs_imputed": observed_vs_imputed_reconstruction,
+        "reconstruction_error_diagnostic_note": (
+            "MSE is measured in standardized feature units and split by original missingness indicators. "
+            "Imputed targets are not observed clinical measurements, so low error on imputed rows is not evidence "
+            "of accurate reconstruction of the unobserved true value."
+        ),
         "vae_training_diagnostics": training_metrics,
         "vae": {
             "evaluation_reconstruction": "deterministic decoder(mu), no latent sampling for validation/test metrics",
