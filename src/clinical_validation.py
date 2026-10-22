@@ -572,13 +572,14 @@ def run_clinical_validation():
         raise ValueError("No baseline subjects available in train or test split.")
 
     y_test = test["hospital_expire_flag"].to_numpy(dtype=int)
-    # Mapping convention is state=3-digitize(mu); lower mu therefore means
-    # higher-numbered state. Report both score orientations rather than hiding it.
-    risk_score = -test["risk_score_mu"].to_numpy(dtype=float)
+    # State bins use state=digitize(mu), so higher mu maps to a higher-numbered
+    # model-defined state. This is a coding convention, not a clinical severity
+    # rule; report both score orientations rather than hiding uncertainty.
+    risk_score = test["risk_score_mu"].to_numpy(dtype=float)
     vae_state = test["state"].to_numpy(dtype=int)
     state_auc = _safe_auc(y_test, vae_state)
     score_auc = _safe_auc(y_test, risk_score)
-    reverse_score_auc = _safe_auc(y_test, test["risk_score_mu"].to_numpy(dtype=float))
+    reverse_score_auc = _safe_auc(y_test, -test["risk_score_mu"].to_numpy(dtype=float))
     mortality_by_state = {}
     for state_id, name in enumerate(STATE_NAMES):
         subset = test.loc[test["state"] == state_id, "hospital_expire_flag"]
