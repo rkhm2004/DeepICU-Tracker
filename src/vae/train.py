@@ -316,7 +316,7 @@ def train_vae(
     metadata = {
         "state_names": STATE_NAMES,
         "cutoffs": cutoffs.tolist(),
-        "mapping": "state = 3 - digitize(mu, cutoffs)",
+        "mapping": "state = digitize(mu, cutoffs); 0=Low, 1=Medium, 2=High, 3=Critical",
         "state_semantics": "model-defined latent bins; not clinically validated severity categories",
         "clinical_outcome_validation": "not performed",
         "interpretation_warning": (
