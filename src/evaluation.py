@@ -184,7 +184,8 @@ def evaluate_pipeline():
     evaluation_df = index_df.copy()
     evaluation_df["risk_score_mu"] = mu_all
     cutoffs = np.asarray(metadata["cutoffs"], dtype=float)
-    states = 3 - np.digitize(mu_all, cutoffs)
+    # Keep labels aligned with STATE_NAMES and CTMC's absorbing state 3=Critical.
+    states = np.digitize(mu_all, cutoffs)
     evaluation_df["state"] = states.astype(int)
     evaluation_df["state_name"] = [STATE_NAMES[s] for s in states]
 
