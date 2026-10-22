@@ -24,8 +24,9 @@ def load_vae_metadata(path="data/processed/vae_metadata.json"):
 
 
 def latent_to_state(risk_score, cutoffs):
-    raw_bin = int(np.digitize(risk_score, np.asarray(cutoffs)))
-    return 3 - raw_bin
+    # Keep state indices aligned with STATE_NAMES and the CTMC absorbing state:
+    # 0=Low, 1=Medium, 2=High, 3=Critical. These are model-defined bins.
+    return int(np.digitize(risk_score, np.asarray(cutoffs)))
 
 
 def load_phase_type_summary(q_path="data/processed/q_matrix.npy"):
