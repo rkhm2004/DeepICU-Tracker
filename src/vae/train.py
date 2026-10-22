@@ -48,13 +48,13 @@ def vae_loss_function(recon_x, x, mu, logvar, observed_mask=None, beta=1.0):
 
 
 def latent_to_state(mu_values, cutoffs):
-    """Apply the implementation's latent-bin ordering, not a clinical risk rule.
+    """Map ascending latent-score bins to Low, Medium, High, Critical.
 
-    Higher latent scores map to lower-numbered states by convention. This
-    orientation and the resulting labels require independent outcome validation.
+    State indices must match STATE_NAMES and the CTMC convention that state 3
+    (Critical) is absorbing. This is a model-defined ordering, not a clinical
+    severity rule; the latent score's clinical direction remains unvalidated.
     """
-    raw_bins = np.digitize(mu_values, cutoffs)
-    return 3 - raw_bins
+    return np.digitize(mu_values, cutoffs).astype(int)
 
 
 def _observed_mask(index_frame, features):
